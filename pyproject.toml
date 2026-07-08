@@ -14,17 +14,35 @@ authors = [
 ]
 
 dependencies = [
-    "pandas",
-    "numpy",
-    "pyyaml",
-    "openpyxl",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "openpyxl>=3.1",
+    "scikit-learn>=1.4",
+    "pyarrow>=15.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "ruff",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+notebook = [
+    "jupyter>=1.0",
+    "ipykernel>=6.29",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
