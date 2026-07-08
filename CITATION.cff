@@ -1,0 +1,11 @@
+# TODO: fill in real citation metadata before publishing/release.
+# See https://citation-file-format.github.io/ for schema details.
+cff-version: 1.2.0
+message: "TODO: add preferred citation message."
+title: "Synthetic Employee Driving Profile Generator"
+type: software
+version: 0.1.0
+date-released: "TODO"
+authors:
+  - name: "TODO: author or LBNL division"
+repository-code: "TODO: add repository URL"

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.env
+
+# Data (never commit raw or derived NHTS data)
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Generated human-readable exports
+reports/xlsx/**/*.xlsx
+!reports/xlsx/**/.gitkeep
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store

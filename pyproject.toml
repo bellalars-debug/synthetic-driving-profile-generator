@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "driving-profiles"
+version = "0.1.0"
+description = "Synthetic employee driving profile generator using NHTS 2022 data, for workplace EV charging demand estimation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "TBD - see LICENSE" }
+authors = [
+    { name = "TODO: add author(s)" },
+]
+
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyyaml",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

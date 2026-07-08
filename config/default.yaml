@@ -1,0 +1,32 @@
+# Default configuration for the synthetic driving profile pipeline.
+# TODO: populate with real values as each pipeline stage is implemented.
+
+survey:
+  source: "NHTS 2022"
+  # TODO: path or URL to the raw extract, and version/checksum info.
+
+random_seed: 42
+
+paths:
+  data_raw: "data/raw"
+  data_interim: "data/interim"
+  data_processed: "data/processed"
+  reports_xlsx: "reports/xlsx"
+
+clustering:
+  # TODO: number of behavior archetypes, algorithm choice, features used.
+  n_clusters: null
+
+generator:
+  # TODO: number of synthetic employee profiles to generate per run.
+  n_profiles: null
+
+export:
+  enabled: true
+  # TODO: which pipeline stages to export as human-readable .xlsx.
+  stages: []
+
+scenarios:
+  # Placeholder only — EV penetration and vehicle type are intentionally
+  # deferred and not modeled yet.
+  ev_penetration_rates: []
