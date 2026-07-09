@@ -20,10 +20,10 @@ def _make_zip(files: dict[str, str]) -> bytes:
 
 
 FOUR_CSVS = {
-    "csv/hhpub.csv": "HOUSEID\n1\n",
-    "csv/perpub.csv": "HOUSEID,PERSONID\n1,01\n",
-    "csv/vehpub.csv": "HOUSEID,VEHID\n1,01\n",
-    "csv/trippub.csv": "HOUSEID,PERSONID,TRIPID\n1,01,01\n",
+    "csv/hhv2pub.csv": "HOUSEID\n1\n",
+    "csv/perv2pub.csv": "HOUSEID,PERSONID\n1,01\n",
+    "csv/vehv2pub.csv": "HOUSEID,VEHID\n1,01\n",
+    "csv/tripv2pub.csv": "HOUSEID,PERSONID,TRIPID\n1,01,01\n",
 }
 
 
@@ -32,31 +32,41 @@ def test_extract_csvs_flattens_nested_paths_and_ignores_non_csv(tmp_path):
 
     extracted = download._extract_csvs(zip_bytes, tmp_path)
 
-    assert sorted(extracted) == ["hhpub.csv", "perpub.csv", "trippub.csv", "vehpub.csv"]
-    assert (tmp_path / "hhpub.csv").read_text() == "HOUSEID\n1\n"
+    assert sorted(extracted) == ["hhv2pub.csv", "perv2pub.csv", "tripv2pub.csv", "vehv2pub.csv"]
+    assert (tmp_path / "hhv2pub.csv").read_text() == "HOUSEID\n1\n"
     assert not (tmp_path / "readme.txt").exists()
 
 
-def test_extract_csvs_wrong_count_raises(tmp_path):
-    zip_bytes = _make_zip({"csv/hhpub.csv": "HOUSEID\n1\n"})
+def test_extract_csvs_missing_required_file_raises(tmp_path):
+    incomplete = {k: v for k, v in FOUR_CSVS.items() if k != "csv/tripv2pub.csv"}
+    zip_bytes = _make_zip(incomplete)
 
-    with pytest.raises(ValueError, match="Expected 4 CSVs"):
+    with pytest.raises(ValueError, match="missing required file"):
         download._extract_csvs(zip_bytes, tmp_path)
 
 
-def test_extract_csvs_does_not_hardcode_filenames(tmp_path):
-    """The archive may use a v2 naming scheme; extraction shouldn't assume names."""
-    renamed = {
-        "csv/hhv2pub.csv": FOUR_CSVS["csv/hhpub.csv"],
-        "csv/perv2pub.csv": FOUR_CSVS["csv/perpub.csv"],
-        "csv/vehpub.csv": FOUR_CSVS["csv/vehpub.csv"],
-        "csv/trippub.csv": FOUR_CSVS["csv/trippub.csv"],
-    }
-    zip_bytes = _make_zip(renamed)
+def test_extract_csvs_unrecognized_file_raises(tmp_path):
+    zip_bytes = _make_zip({**FOUR_CSVS, "csv/mysterypub.csv": "X\n1\n"})
+
+    with pytest.raises(ValueError, match="unrecognized file"):
+        download._extract_csvs(zip_bytes, tmp_path)
+
+
+def test_extract_csvs_allows_known_optional_long_distance_file(tmp_path):
+    """The real 2022 archive ships a 5th CSV (long-distance trips) that
+    clean.py/ingest.py intentionally never load - it must not fail extraction."""
+    zip_bytes = _make_zip({**FOUR_CSVS, "csv/ldtv2pub.csv": "HOUSEID\n1\n"})
 
     extracted = download._extract_csvs(zip_bytes, tmp_path)
 
-    assert sorted(extracted) == ["hhv2pub.csv", "perv2pub.csv", "trippub.csv", "vehpub.csv"]
+    assert sorted(extracted) == [
+        "hhv2pub.csv",
+        "ldtv2pub.csv",
+        "perv2pub.csv",
+        "tripv2pub.csv",
+        "vehv2pub.csv",
+    ]
+    assert (tmp_path / "ldtv2pub.csv").exists()
 
 
 def test_fetch_writes_manifest_with_sha256_and_source_info(tmp_path, monkeypatch):
@@ -72,7 +82,12 @@ def test_fetch_writes_manifest_with_sha256_and_source_info(tmp_path, monkeypatch
     assert manifest.source_url == "https://example.invalid/csv.zip"
     assert manifest.sha256 == expected_sha256
     assert manifest.last_modified == "Fri, 20 Dec 2024 00:00:00 GMT"
-    assert manifest.extracted_files == ["hhpub.csv", "perpub.csv", "trippub.csv", "vehpub.csv"]
+    assert manifest.extracted_files == [
+        "hhv2pub.csv",
+        "perv2pub.csv",
+        "tripv2pub.csv",
+        "vehv2pub.csv",
+    ]
 
     manifest_path = tmp_path / "manifest.json"
     assert manifest_path.exists()

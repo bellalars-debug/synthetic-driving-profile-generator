@@ -1,11 +1,26 @@
 """Fetch and verify the NHTS 2022 public-use data extract.
 
 Per docs/data_requirements.md section 5: fetch the CSV bundle, verify it
-contains exactly four CSVs without hard-coding their names (the official
-docs and third-party sources disagree on whether they're named
-`hhpub.csv`-style or `hhv2pub.csv`-style), and persist a sha256 + source
-URL + Last-Modified alongside the extract so it's reproducible from a
-fresh clone.
+contains the four core travel files this project's pipeline depends on,
+and persist a sha256 + source URL + Last-Modified alongside the extract so
+it's reproducible from a fresh clone.
+
+## Filename check: a deliberate change from "count only"
+
+This module originally verified only that the archive held exactly four
+CSVs, without checking their names, since the official docs and
+third-party sources once disagreed on whether they were `hhpub.csv`-style
+or `hhv2pub.csv`-style. `ingest.py` has since settled that ambiguity - it
+already hard-codes the `*v2pub.csv` names - so a pure count check is no
+longer the right guard: the official archive now ships a fifth CSV,
+`ldtv2pub.csv` (long-distance trips), which `clean.py`/`ingest.py`
+intentionally never load. A count of 4 would reject today's real archive;
+a count of 5 would silently accept a future archive that dropped or
+renamed one of the four files this pipeline actually reads. So the check
+is now name-based: `REQUIRED_CSV_FILENAMES` must all be present (or
+`fetch` fails), `KNOWN_OPTIONAL_CSV_FILENAMES` may or may not be present,
+and anything else is treated as an unrecognized archive-layout change and
+rejected rather than silently trusted.
 """
 
 from __future__ import annotations
@@ -23,7 +38,20 @@ from urllib.request import urlopen
 logger = logging.getLogger(__name__)
 
 NHTS_2022_CSV_URL = "https://nhts.ornl.gov/assets/2022/download/csv.zip"
-EXPECTED_CSV_COUNT = 4
+
+# The four travel files ingest.py reads (household, person, vehicle, trip -
+# see its own HOUSEHOLD_ID_COLUMNS etc.). fetch() fails if any is missing.
+REQUIRED_CSV_FILENAMES = frozenset(
+    {"hhv2pub.csv", "perv2pub.csv", "vehv2pub.csv", "tripv2pub.csv"}
+)
+
+# Official files the NHTS 2022 archive may also include that this
+# project's pipeline intentionally never loads (see clean.py's module
+# docstring for ldtv2pub.csv specifically). Present or absent, they don't
+# affect whether fetch() succeeds - they're just not treated as a sign of
+# an unrecognized archive layout the way a wholly unexpected file is.
+KNOWN_OPTIONAL_CSV_FILENAMES = frozenset({"ldtv2pub.csv"})
+
 DEFAULT_DEST_DIR = Path("data/raw")
 MANIFEST_FILENAME = "manifest.json"
 
@@ -48,10 +76,11 @@ def _download(url: str) -> tuple[bytes, str | None]:
 def _extract_csvs(zip_bytes: bytes, dest_dir: Path) -> list[str]:
     """Extract every CSV member of `zip_bytes` (flattened) into `dest_dir`.
 
-    Raises ValueError if the archive doesn't contain exactly
-    EXPECTED_CSV_COUNT CSVs, since that means an assumption in
-    docs/data_requirements.md no longer holds and needs re-checking
-    before ingest.py trusts the contents of dest_dir.
+    Raises ValueError if any of `REQUIRED_CSV_FILENAMES` is missing, or if
+    the archive contains a CSV that is neither required nor a recognized
+    optional file (`KNOWN_OPTIONAL_CSV_FILENAMES`) - either case means an
+    assumption in docs/data_requirements.md no longer holds and needs
+    re-checking before ingest.py trusts the contents of dest_dir.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[str] = []
@@ -68,12 +97,18 @@ def _extract_csvs(zip_bytes: bytes, dest_dir: Path) -> list[str]:
             extracted.append(name)
 
     logger.info("Extracted %d CSV file(s): %s", len(extracted), sorted(extracted))
-    if len(extracted) != EXPECTED_CSV_COUNT:
+
+    extracted_set = set(extracted)
+    missing = REQUIRED_CSV_FILENAMES - extracted_set
+    unexpected = extracted_set - REQUIRED_CSV_FILENAMES - KNOWN_OPTIONAL_CSV_FILENAMES
+    if missing or unexpected:
         raise ValueError(
-            f"Expected {EXPECTED_CSV_COUNT} CSVs in the NHTS 2022 zip, "
-            f"found {len(extracted)}: {sorted(extracted)}. The archive layout "
-            "may have changed since docs/data_requirements.md was written - "
-            "re-verify before trusting these files."
+            "The NHTS 2022 zip's contents don't match this project's expectations "
+            f"(found {sorted(extracted_set)}): "
+            f"missing required file(s) {sorted(missing)}; "
+            f"unrecognized file(s) {sorted(unexpected)}. "
+            "The archive layout may have changed since docs/data_requirements.md "
+            "was written - re-verify before trusting these files."
         )
     return extracted
 
