@@ -156,14 +156,24 @@ def validate_jitter_preserves_nan(source: pd.DataFrame, synthetic: pd.DataFrame)
 
 
 def _candidate_donor_pool(
-    donor_summary: pd.DataFrame, cluster_id, trips_per_day: int, number_of_stops: int
+    donor_summary: pd.DataFrame,
+    cluster_id,
+    require_driving_leg: bool,
+    trips_per_day: int,
+    number_of_stops: int,
 ) -> pd.DataFrame:
-    """Reproduce select_donor's cluster/tolerance-widening candidate search
-    (generator/activity.py's MATCH_TOLERANCES), but return every candidate
-    at the tolerance level that first found a match, rather than picking
-    one - the set select_donor's own tie-break would have drawn from.
+    """Reproduce `select_donor`'s current candidate search
+    (generator/activity.py): `cluster_id` and `has_driving_leg ==
+    require_driving_leg` (the donor mode-blindness fix), then the same
+    trip/stop-count tolerance widening (`MATCH_TOLERANCES`). Returns every
+    candidate at the tolerance level that first found a match, rather than
+    picking one - the set `select_donor`'s own tie-break would have drawn
+    from.
     """
-    pool = donor_summary.loc[donor_summary["cluster_id"] == cluster_id]
+    pool = donor_summary.loc[
+        (donor_summary["cluster_id"] == cluster_id)
+        & (donor_summary["has_driving_leg"] == require_driving_leg)
+    ]
     if pool.empty:
         return pool
     trip_diff = (pool["trip_count"] - trips_per_day).abs()
@@ -180,27 +190,31 @@ def estimate_donor_mode_blindness_rate(
     employee_clusters: pd.DataFrame,
     trips_clean: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Estimate how often a null-`total_daily_miles` synthetic employee's
-    donor chain is *also* a non-driving day for the donor (plan §5's "case
-    2"): `build_donor_legs`/`select_donor` don't filter by driving mode, so
-    a donor whose own day had no driving-mode trips can still be selected
-    purely on trip/stop-count match, and its `TRPMILES`/`TRVLCMIN` would
-    then describe a walk/bike/transit trip mislabeled as `distance`/
-    `duration` in the driving-activity table.
+    """Confirm no donor mode mismatch remains after `generator/activity.py`'s
+    `select_donor` fix (`docs/validation_results.md` §6 "donor
+    mode-blindness"): `select_donor` now restricts its candidate pool to
+    donors whose own `has_driving_leg` matches whether the requesting
+    employee's `total_daily_miles` is non-null (`require_driving_leg`), so
+    a donor's raw `TRPMILES`/`TRVLCMIN` can no longer describe the wrong
+    kind of day (a non-driving donor's walk/bike/transit trip standing in
+    for a driving employee's `distance`/`duration`, or vice versa).
 
     This does *not* replay the actual RNG draws recorded in
     `synthetic_activity.parquet` - `generator/activity.py`'s module
     docstring explains why donor identity is deliberately not stored in
     that output (no real IDs in generated artifacts), so there is nothing
-    to join back to directly. Instead, for every null-`total_daily_miles`
-    synthetic employee, this reproduces the *candidate donor pool*
-    `select_donor` would have searched (same cluster/trip-count/stop-count
-    tolerance widening) and computes the share of those candidates that are
-    themselves null-`total_daily_miles` donors. Since `select_donor` breaks
-    ties uniformly at random among candidates, the mean of this per-employee
-    share is the expected case-2 rate under the actual selection mechanism
-    - an honest estimate of the real quantity, not a replay of one
-    particular run's random draws.
+    to join back to directly. Instead, for every synthetic employee, this
+    reproduces the *candidate donor pool* `select_donor` would have
+    searched (`_candidate_donor_pool`, same cluster/has_driving_leg/
+    trip-count/stop-count tolerance widening) and checks each candidate's
+    own `total_daily_miles` nullness (from `employee_clusters`, a field
+    computed independently of `has_driving_leg`, which is instead derived
+    from `trips_clean`'s `TRPTRANS`) against what the employee's
+    `require_driving_leg` implies. Every candidate is expected to agree - a
+    disagreement would mean `has_driving_leg` and `total_daily_miles`
+    nullness have drifted out of sync for some donor, which would let a
+    mismatch slip through `select_donor`'s filter despite it operating
+    correctly.
     """
     donor_legs = activity_module.build_donor_legs(trips_clean, employee_clusters)
     donor_summary = activity_module.summarize_donor_chains(donor_legs)
@@ -214,42 +228,47 @@ def estimate_donor_mode_blindness_rate(
         daily_miles_by_person.reindex(donor_key).isna().to_numpy()
     )
 
-    null_employees = synthetic_employees.loc[synthetic_employees[PRIMARY_MISSING_COLUMN].isna()]
-
-    per_employee_rates = []
+    n_violations = 0
+    n_checked = 0
     n_no_candidates = 0
-    for _, employee in null_employees.iterrows():
+    n_employees_checked = 0
+    for _, employee in synthetic_employees.iterrows():
+        require_driving_leg = bool(pd.notna(employee[PRIMARY_MISSING_COLUMN]))
         candidates = _candidate_donor_pool(
             donor_summary,
             employee["cluster_id"],
+            require_driving_leg,
             int(employee["trips_per_day"]),
             int(employee["number_of_stops"]),
         )
         if candidates.empty:
             n_no_candidates += 1
             continue
-        per_employee_rates.append(float(candidates["donor_total_daily_miles_null"].mean()))
+        n_employees_checked += 1
+        n_checked += len(candidates)
+        # A driving employee's candidates must all have driven
+        # (donor_total_daily_miles_null == False); a non-driving employee's
+        # candidates must all not have (== True) - so a mismatch is where
+        # the candidate's nullness equals require_driving_leg itself.
+        mismatched = candidates["donor_total_daily_miles_null"] == require_driving_leg
+        n_violations += int(mismatched.sum())
 
-    mean_rate = float(np.mean(per_employee_rates)) if per_employee_rates else float("nan")
     return common.results_frame(
         [
-            common.result_row(
+            common.structural_result(
                 SECTION,
-                "donor_mode_blindness_case2_rate_estimate",
-                group="pooled",
-                test="diagnostic_estimate",
-                statistic=mean_rate,
-                n_synthetic=len(null_employees),
+                "donor_mode_mismatch",
+                n_violations=n_violations,
+                n_checked=n_checked,
                 threshold=(
-                    "informational - not a pass/fail gate (plan §5: measure before "
-                    "deciding whether build_donor_legs needs a driving-mode restriction)"
+                    "0 candidate donors whose total_daily_miles nullness contradicts the "
+                    "requesting employee's own driving-mode requirement"
                 ),
-                passed=None,
                 detail=(
-                    f"expected case-2 rate across {len(per_employee_rates)} "
-                    f"null-{PRIMARY_MISSING_COLUMN} employee(s) with >=1 candidate donor; "
-                    f"{n_no_candidates} had no matching donor (would use a fallback chain, "
-                    "which is unaffected by donor mode-blindness)"
+                    f"{n_violations} mismatched candidate(s) across {n_checked} candidate(s) "
+                    f"for {n_employees_checked}/{len(synthetic_employees)} synthetic "
+                    f"employee(s) with >=1 candidate donor; {n_no_candidates} had no matching "
+                    "donor (would use a fallback chain, unaffected by donor mode-blindness)"
                 ),
             )
         ]

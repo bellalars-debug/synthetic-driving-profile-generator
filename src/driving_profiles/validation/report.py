@@ -349,14 +349,13 @@ def _render_findings(
         findings.append(f"- **Fallback chain rate (pooled): {rate:.2%}.**")
 
     donor_blind = results["missingness"].loc[
-        results["missingness"]["metric"] == "donor_mode_blindness_case2_rate_estimate"
+        results["missingness"]["metric"] == "donor_mode_mismatch"
     ]
     if not donor_blind.empty:
         row = donor_blind.iloc[0]
-        rate = row["statistic"]
-        rate_str = f"{rate:.1%}" if pd.notna(rate) else "n/a"
+        verdict = "holds" if row["passed"] else "DOES NOT hold"
         findings.append(
-            f"- **Estimated donor mode-blindness ('case 2') rate: {rate_str}.** "
+            f"- **Donor mode-blindness fix {verdict} (donor mode mismatch check)**: "
             f"{row['detail']}."
         )
 
@@ -393,20 +392,19 @@ def _render_open_issues(
             )
 
     donor_blind = results["missingness"].loc[
-        results["missingness"]["metric"] == "donor_mode_blindness_case2_rate_estimate"
+        results["missingness"]["metric"] == "donor_mode_mismatch"
     ]
     if not donor_blind.empty:
-        rate = donor_blind.iloc[0]["statistic"]
-        if pd.notna(rate) and rate > 0:
+        row = donor_blind.iloc[0]
+        if not row["passed"]:
             issues.append(
-                f"- **Donor mode-blindness ({rate:.1%} estimated case-2 rate)**: "
-                "`generator/activity.py`'s `build_donor_legs` does not restrict the donor "
-                "pool by driving mode, so a null-`total_daily_miles` synthetic employee's "
-                "chain can be built from a donor whose own day also had no driving-mode "
-                "trips - that donor's `TRPMILES`/`TRVLCMIN` then appear as `distance`/"
-                "`duration` in a driving-activity table with no mode flag. Not yet fixed "
-                "or caveated in code, per `docs/validation_plan.md` §5's recommendation "
-                "to measure before deciding whether it's material enough to address."
+                f"- **Donor mode mismatch ({int(row['statistic'])} violation(s))**: "
+                "`generator/activity.py`'s `select_donor` restricts candidate donors by "
+                "`has_driving_leg`, but a candidate donor's own `total_daily_miles` "
+                "nullness disagreed with that flag for at least one synthetic employee - "
+                f"{row['detail']}. Indicates `has_driving_leg` (derived from `TRPTRANS`) "
+                "and `total_daily_miles` nullness (derived in `build_features.py`) have "
+                "drifted out of sync for some donor."
             )
 
     if not issues:
