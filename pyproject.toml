@@ -20,6 +20,8 @@ dependencies = [
     "openpyxl>=3.1",
     "scikit-learn>=1.4",
     "pyarrow>=15.0",
+    "scipy>=1.11",
+    "tabulate>=0.9",
 ]
 
 [project.optional-dependencies]
