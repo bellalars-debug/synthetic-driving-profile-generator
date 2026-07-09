@@ -11,13 +11,13 @@ from driving_profiles.validation import activity as av
 
 def _trip_row(
     house_id, person_id, trip_id, strttime, endtime, trvlcmin, trpmiles, whytrp1s,
-    loop_trip=2, vehtype=1.0, vehfuel=1.0,
+    loop_trip=2, vehtype=1.0, vehfuel=1.0, trptrans=3,
 ):
     return {
         "HOUSEID": house_id, "PERSONID": person_id, "TRIPID": trip_id,
         "LOOP_TRIP": loop_trip, "STRTTIME": strttime, "ENDTIME": endtime,
         "TRVLCMIN": trvlcmin, "TRPMILES": trpmiles, "WHYTRP1S": whytrp1s,
-        "VEHTYPE": vehtype, "VEHFUEL": vehfuel,
+        "VEHTYPE": vehtype, "VEHFUEL": vehfuel, "TRPTRANS": trptrans,
     }
 
 

@@ -112,13 +112,14 @@ def test_validate_jitter_preserves_nan_fails_when_a_null_was_filled_in():
 
 
 def _trip_row(
-    house_id, person_id, trip_id, strttime, endtime, trvlcmin, trpmiles, whytrp1s, loop_trip=2
+    house_id, person_id, trip_id, strttime, endtime, trvlcmin, trpmiles, whytrp1s,
+    loop_trip=2, trptrans=3,
 ):
     return {
         "HOUSEID": house_id, "PERSONID": person_id, "TRIPID": trip_id,
         "LOOP_TRIP": loop_trip, "STRTTIME": strttime, "ENDTIME": endtime,
         "TRVLCMIN": trvlcmin, "TRPMILES": trpmiles, "WHYTRP1S": whytrp1s,
-        "VEHTYPE": 1.0, "VEHFUEL": 1.0,
+        "VEHTYPE": 1.0, "VEHFUEL": 1.0, "TRPTRANS": trptrans,
     }
 
 

@@ -21,7 +21,11 @@ def _trip_row(
     loop_trip: int = 2,
     vehtype: float = 1.0,
     vehfuel: float = 1.0,
+    trptrans: int = 3,
 ) -> dict:
+    # trptrans defaults to 3 ("Car"), a DRIVING_MODE_TRPTRANS_CODES member,
+    # so every existing donor fixture is a driving donor unless a test
+    # overrides it - keeps pre-driving-filter test behavior unchanged.
     return {
         "HOUSEID": house_id,
         "PERSONID": person_id,
@@ -34,6 +38,7 @@ def _trip_row(
         "WHYTRP1S": whytrp1s,
         "VEHTYPE": vehtype,
         "VEHFUEL": vehfuel,
+        "TRPTRANS": trptrans,
     }
 
 
@@ -239,6 +244,31 @@ def test_build_donor_legs_drops_donor_with_within_leg_time_reversal():
     assert "D7" not in legs["HOUSEID"].tolist()
 
 
+def test_build_donor_legs_flags_is_driving_leg_from_trptrans():
+    # D11: a driving-mode leg (car, trptrans=3) followed by a non-driving
+    # leg (walk, trptrans=1) - is_driving_leg must be computed per leg, not
+    # per donor.
+    trips, clusters = _sample_trips_and_clusters()
+    trips = pd.concat(
+        [
+            trips,
+            _trips_clean_df(
+                _trip_row("D11", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=3),
+                _trip_row("D11", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1),
+            ),
+        ],
+        ignore_index=True,
+    )
+    clusters = pd.concat(
+        [clusters, _employee_clusters_df([("D11", "01", 0)])], ignore_index=True
+    )
+
+    legs = ac.build_donor_legs(trips, clusters)
+    d11_legs = legs.loc[(legs["HOUSEID"] == "D11") & (legs["PERSONID"] == "01")]
+
+    assert d11_legs["is_driving_leg"].tolist() == [True, False]
+
+
 def test_build_donor_legs_drops_donor_with_implausibly_long_leg():
     # D8: an occasional very-long single leg (the regular NHTS trip file
     # does contain a small fraction of these even though the dedicated
@@ -289,6 +319,40 @@ def test_summarize_donor_chains_excludes_donors_without_a_work_leg():
     assert "D4" not in summary["HOUSEID"].tolist()
 
 
+def test_summarize_donor_chains_has_driving_leg_true_when_any_leg_drives():
+    # D1's default fixture legs are all trptrans=3 (driving).
+    trips, clusters = _sample_trips_and_clusters()
+    legs = ac.build_donor_legs(trips, clusters)
+
+    summary = ac.summarize_donor_chains(legs).set_index(["HOUSEID", "PERSONID"])
+
+    assert bool(summary.loc[("D1", "01"), "has_driving_leg"]) is True
+
+
+def test_summarize_donor_chains_has_driving_leg_false_when_no_leg_drives():
+    # D12: every leg is a non-driving mode (walk) - has_driving_leg must be
+    # False even though the chain otherwise has a normal work-leg shape.
+    trips, clusters = _sample_trips_and_clusters()
+    trips = pd.concat(
+        [
+            trips,
+            _trips_clean_df(
+                _trip_row("D12", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=1),
+                _trip_row("D12", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1),
+            ),
+        ],
+        ignore_index=True,
+    )
+    clusters = pd.concat(
+        [clusters, _employee_clusters_df([("D12", "01", 0)])], ignore_index=True
+    )
+    legs = ac.build_donor_legs(trips, clusters)
+
+    summary = ac.summarize_donor_chains(legs).set_index(["HOUSEID", "PERSONID"])
+
+    assert bool(summary.loc[("D12", "01"), "has_driving_leg"]) is False
+
+
 # --- select_donor ----------------------------------------------------------------
 
 
@@ -298,7 +362,10 @@ def test_select_donor_prefers_exact_match():
     summary = ac.summarize_donor_chains(legs)
     rng = np.random.default_rng(0)
 
-    donor = ac.select_donor(0, trips_per_day=3, number_of_stops=2, donor_summary=summary, rng=rng)
+    donor = ac.select_donor(
+        0, trips_per_day=3, number_of_stops=2, donor_summary=summary, rng=rng,
+        require_driving_leg=True,
+    )
 
     assert donor == ("D2", "01")
 
@@ -311,7 +378,10 @@ def test_select_donor_respects_cluster_restriction():
 
     # D3 is the only exact (2,1) match but it's cluster 1; cluster 0 must
     # never resolve to D3.
-    donor = ac.select_donor(0, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng)
+    donor = ac.select_donor(
+        0, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng,
+        require_driving_leg=True,
+    )
 
     assert donor in {("D1", "01"), ("D5", "01")}
 
@@ -323,7 +393,10 @@ def test_select_donor_widens_tolerance_when_no_exact_match():
     rng = np.random.default_rng(0)
 
     # (4, 3) has no exact match in cluster 0, but D2's (3, 2) is within +-1.
-    donor = ac.select_donor(0, trips_per_day=4, number_of_stops=3, donor_summary=summary, rng=rng)
+    donor = ac.select_donor(
+        0, trips_per_day=4, number_of_stops=3, donor_summary=summary, rng=rng,
+        require_driving_leg=True,
+    )
 
     assert donor == ("D2", "01")
 
@@ -334,7 +407,65 @@ def test_select_donor_returns_none_when_cluster_has_no_donor():
     summary = ac.summarize_donor_chains(legs)
     rng = np.random.default_rng(0)
 
-    donor = ac.select_donor(99, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng)
+    donor = ac.select_donor(
+        99, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng,
+        require_driving_leg=True,
+    )
+
+    assert donor is None
+
+
+def _mixed_driving_donor_pool() -> pd.DataFrame:
+    """Two cluster-0 donors, identical (2, 1) shape, differing only in
+    driving status: DDRV drove that day, DWLK never used a driving mode."""
+    trips = _trips_clean_df(
+        _trip_row("DDRV", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=3),
+        _trip_row("DDRV", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=3),
+        _trip_row("DWLK", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=1),
+        _trip_row("DWLK", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1),
+    )
+    clusters = _employee_clusters_df([("DDRV", "01", 0), ("DWLK", "01", 0)])
+    legs = ac.build_donor_legs(trips, clusters)
+    return ac.summarize_donor_chains(legs)
+
+
+def test_select_donor_only_returns_driving_donor_when_required():
+    summary = _mixed_driving_donor_pool()
+    rng = np.random.default_rng(0)
+
+    for _ in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng,
+            require_driving_leg=True,
+        )
+        assert donor == ("DDRV", "01")
+
+
+def test_select_donor_only_returns_non_driving_donor_when_required():
+    summary = _mixed_driving_donor_pool()
+    rng = np.random.default_rng(0)
+
+    for _ in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng,
+            require_driving_leg=False,
+        )
+        assert donor == ("DWLK", "01")
+
+
+def test_select_donor_returns_none_when_no_donor_matches_driving_requirement():
+    # Pool has only a driving donor (D1..D5 default trptrans=3); asking for
+    # a non-driving donor in that cluster must fail rather than silently
+    # returning a driving one.
+    trips, clusters = _sample_trips_and_clusters()
+    legs = ac.build_donor_legs(trips, clusters)
+    summary = ac.summarize_donor_chains(legs)
+    rng = np.random.default_rng(0)
+
+    donor = ac.select_donor(
+        0, trips_per_day=2, number_of_stops=1, donor_summary=summary, rng=rng,
+        require_driving_leg=False,
+    )
 
     assert donor is None
 
@@ -344,8 +475,8 @@ def test_select_donor_is_reproducible_with_same_rng_seed():
     legs = ac.build_donor_legs(trips, clusters)
     summary = ac.summarize_donor_chains(legs)
 
-    donor_a = ac.select_donor(0, 2, 1, summary, np.random.default_rng(7))
-    donor_b = ac.select_donor(0, 2, 1, summary, np.random.default_rng(7))
+    donor_a = ac.select_donor(0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True)
+    donor_b = ac.select_donor(0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True)
 
     assert donor_a == donor_b
 
@@ -648,6 +779,52 @@ def test_generate_synthetic_activity_can_vary_donor_choice_with_different_seed()
     # TRPMILES-derived scale factor (D1: 10mi legs: D5: 12mi legs), so a
     # different donor pick is still observable here.
     assert not activity_a["duration"].equals(activity_b["duration"])
+
+
+def test_generate_synthetic_activity_matches_driving_status_between_employee_and_donor():
+    # Regression for the donor mode-blindness fix: a mixed donor pool with
+    # one driving donor (DDRV, VEHTYPE sentinel 1.0) and one non-driving
+    # donor (DWLK, VEHTYPE sentinel 2.0), both an exact (2, 1) cluster-0
+    # match, so *only* the driving-status filter can disambiguate them.
+    trips = _trips_clean_df(
+        _trip_row(
+            "DDRV", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=3, vehtype=1.0
+        ),
+        _trip_row(
+            "DDRV", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=3, vehtype=1.0
+        ),
+        _trip_row(
+            "DWLK", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=1, vehtype=2.0
+        ),
+        _trip_row(
+            "DWLK", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1, vehtype=2.0
+        ),
+    )
+    clusters = _employee_clusters_df([("DDRV", "01", 0), ("DWLK", "01", 0)])
+    employees = _synthetic_employees_df(
+        _employee_row(
+            "SYN-DRIVER", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            total_daily_miles=20.0,
+        ),
+        _employee_row(
+            "SYN-NONDRIVER", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            total_daily_miles=float("nan"),
+        ),
+    )
+
+    activity = ac.generate_synthetic_activity(employees, clusters, trips, seed=0)
+
+    driver_legs = activity.loc[activity["synthetic_employee_id"] == "SYN-DRIVER"]
+    nondriver_legs = activity.loc[activity["synthetic_employee_id"] == "SYN-NONDRIVER"]
+
+    assert (driver_legs["chain_source"] == ac.DONOR_CHAIN_SOURCE).all()
+    assert (driver_legs["vehicle_type"] == 1.0).all()  # only DDRV could have been chosen
+
+    assert (nondriver_legs["chain_source"] == ac.DONOR_CHAIN_SOURCE).all()
+    assert (nondriver_legs["vehicle_type"] == 2.0).all()  # only DWLK could have been chosen
+    # The non-driver's raw (unscaled) legs are exactly DWLK's own non-driving
+    # TRPMILES - not a driving donor's mileage passed through mislabeled.
+    assert nondriver_legs["distance"].tolist() == [10.0, 10.0]
 
 
 # --- I/O -----------------------------------------------------------------------

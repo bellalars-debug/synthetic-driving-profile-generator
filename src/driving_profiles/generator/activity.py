@@ -17,9 +17,16 @@ that is deferred to `scenarios/charging_demand.py`. Methodology:
 ## Donor selection and rescaling (plan §3)
 
 Every synthetic employee's chain is a real NHTS respondent's chain,
-restricted to donors sharing that employee's `cluster_id` and matched on
-trip/stop count (exact match first, widening to +-1 - `MATCH_TOLERANCES`),
-then rescaled (never copied verbatim): times are shifted so the chain's
+restricted to donors sharing that employee's `cluster_id` and whose day's
+driving status (`has_driving_leg`, derived from `TRPTRANS`) matches whether
+the employee's own `total_daily_miles` is non-null - a driver only borrows
+from a donor who also drove that day, and a non-driver only borrows from a
+donor who had no driving-mode legs, so a donor's raw (unscaled, mode-blind)
+`TRPMILES`/`TRVLCMIN` can never be mistaken for driving distance/duration
+(`docs/validation_results.md` §6's "donor mode-blindness" finding). Within
+that restriction, donors are matched on trip/stop count (exact match first,
+widening to +-1 - `MATCH_TOLERANCES`), then rescaled (never copied
+verbatim): times are shifted so the chain's
 first work-purpose leg and the leg immediately following it land on the
 employee's own drawn `work_arrival_time`/`work_departure_time`
 (`rescale_chain_times`), and distances/durations are scaled so the chain's
@@ -55,6 +62,7 @@ import pandas as pd
 from driving_profiles.data import clean
 from driving_profiles.features import cluster as cluster_module
 from driving_profiles.features.build_features import (
+    DRIVING_MODE_TRPTRANS_CODES,
     HOME_PURPOSE_WHYTRP1S_CODE,
     LOOP_TRIP_YES_CODE,
     WORK_PURPOSE_WHYTRP1S_CODE,
@@ -116,6 +124,7 @@ DONOR_LEG_COLUMNS = [
     "TRVLCMIN",
     "TRPMILES",
     "WHYTRP1S",
+    "TRPTRANS",
     "VEHTYPE",
     "VEHFUEL",
 ]
@@ -232,6 +241,15 @@ def build_donor_legs(trips_clean: pd.DataFrame, employee_clusters: pd.DataFrame)
     `clean.py`) would otherwise get carried through
     `rescale_chain_distances` unscaled whenever a synthetic employee's own
     `total_daily_miles` is NaN (no target to scale it down to).
+
+    Also adds a per-leg `is_driving_leg` flag (`TRPTRANS` in
+    `DRIVING_MODE_TRPTRANS_CODES`, reusing `build_features.py`'s own
+    driving-mode definition rather than re-deriving it) - `summarize_donor_chains`
+    reduces this to a per-donor `has_driving_leg`, which `select_donor` uses
+    to keep a donor whose day had no real driving-mode trips from donating
+    its raw (mode-blind) `TRPMILES`/`TRVLCMIN` into a driving-activity chain
+    (validation finding: `docs/validation_results.md` §6 "donor
+    mode-blindness").
     """
     clusters = employee_clusters.loc[
         employee_clusters["cluster_id"].notna(), PERSON_KEY + ["cluster_id"]
@@ -242,6 +260,7 @@ def build_donor_legs(trips_clean: pd.DataFrame, employee_clusters: pd.DataFrame)
     legs["_seq"] = legs["TRIPID"].astype(int)
     legs = legs.sort_values(PERSON_KEY + ["_seq"]).drop(columns="_seq").reset_index(drop=True)
     legs["trip_purpose"] = classify_trip_purpose(legs["WHYTRP1S"])
+    legs["is_driving_leg"] = legs["TRPTRANS"].isin(DRIVING_MODE_TRPTRANS_CODES)
 
     dep_min = legs["STRTTIME"].apply(hhmm_to_minutes)
     arr_min = legs["ENDTIME"].apply(hhmm_to_minutes)
@@ -268,13 +287,21 @@ def build_donor_legs(trips_clean: pd.DataFrame, employee_clusters: pd.DataFrame)
 
 
 def summarize_donor_chains(donor_legs: pd.DataFrame) -> pd.DataFrame:
-    """One row per donor respondent: `cluster_id` and chain shape
-    (`trip_count`, `stop_count`), restricted to donors who actually reached
-    a work-purpose destination that day.
+    """One row per donor respondent: `cluster_id`, chain shape
+    (`trip_count`, `stop_count`), and `has_driving_leg`, restricted to
+    donors who actually reached a work-purpose destination that day.
 
     A donor without a work leg has no anchor for `rescale_chain_times`'s
     arrival/departure rescaling and would be unusable regardless of how
-    well its trip/stop count matches (plan §3).
+    well its trip/stop count matches (plan §3) - `has_work_leg` is only a
+    filter, so (unlike `has_driving_leg`) it's dropped from the returned
+    frame once applied, since every remaining row is guaranteed True.
+
+    `has_driving_leg` (`build_donor_legs`'s per-leg `is_driving_leg`,
+    reduced with "any") is *not* filtered here - whether a donor needs to
+    have driven that day depends on the requesting synthetic employee's own
+    `total_daily_miles` (null vs. not), which this function doesn't see.
+    It's kept in the output so `select_donor` can filter on it per-call.
     """
     grouped = donor_legs.groupby(PERSON_KEY)
     summary = grouped.agg(
@@ -282,6 +309,7 @@ def summarize_donor_chains(donor_legs: pd.DataFrame) -> pd.DataFrame:
         trip_count=("trip_purpose", "size"),
         stop_count=("trip_purpose", lambda s: int((s != TRIP_PURPOSE_HOME).sum())),
         has_work_leg=("trip_purpose", lambda s: bool((s == TRIP_PURPOSE_WORK).any())),
+        has_driving_leg=("is_driving_leg", "any"),
     ).reset_index()
     return summary.loc[summary["has_work_leg"]].drop(columns="has_work_leg").reset_index(drop=True)
 
@@ -292,19 +320,34 @@ def select_donor(
     number_of_stops: int,
     donor_summary: pd.DataFrame,
     rng: np.random.Generator,
+    require_driving_leg: bool,
 ) -> tuple[str, str] | None:
     """Pick one donor `(HOUSEID, PERSONID)` from `donor_summary` sharing
-    `cluster_id`, matching `trips_per_day`/`number_of_stops` as closely as
-    possible (plan §3 step 2: exact match first, widening to +-1 -
-    `MATCH_TOLERANCES`).
+    `cluster_id` and matching `require_driving_leg` against the donor's own
+    `has_driving_leg`, then matching `trips_per_day`/`number_of_stops` as
+    closely as possible (plan §3 step 2: exact match first, widening to +-1
+    - `MATCH_TOLERANCES`).
+
+    `require_driving_leg` fixes the donor mode-blindness validation finding
+    (`docs/validation_results.md` §6): a synthetic employee with a non-null
+    `total_daily_miles` (a real driving day) should only ever be matched to
+    a donor whose own day included at least one driving-mode leg, and a
+    synthetic employee with a null `total_daily_miles` should only ever be
+    matched to a donor whose day had *no* driving-mode legs at all, so no
+    real (unscaled) vehicle mileage can leak into that employee's chain -
+    see `generate_chain_for_employee`, which derives this flag from
+    `total_daily_miles`.
 
     Ties are broken by a seeded random draw against a `PERSON_KEY`-sorted
     candidate list, so donor selection is reproducible given the same `rng`
     sequence rather than depending on incidental row order. Returns `None`
-    if no donor in this cluster is within tolerance at any widening step
-    (plan §3 step 3's fallback trigger).
+    if no donor in this cluster with matching driving status is within
+    tolerance at any widening step (plan §3 step 3's fallback trigger).
     """
-    pool = donor_summary.loc[donor_summary["cluster_id"] == cluster_id]
+    pool = donor_summary.loc[
+        (donor_summary["cluster_id"] == cluster_id)
+        & (donor_summary["has_driving_leg"] == require_driving_leg)
+    ]
     if pool.empty:
         return None
 
@@ -577,6 +620,10 @@ def generate_chain_for_employee(
     """Build one synthetic employee's full daily chain: select and rescale a
     donor (plan §3), or fall back to a minimal synthesized chain if none is
     close enough.
+
+    Requires the selected donor's `has_driving_leg` to match whether this
+    employee's own `total_daily_miles` is non-null - see `select_donor`'s
+    `require_driving_leg` docstring (donor mode-blindness fix).
     """
     donor_key = select_donor(
         employee_row["cluster_id"],
@@ -584,6 +631,7 @@ def generate_chain_for_employee(
         int(employee_row["number_of_stops"]),
         donor_summary,
         rng,
+        require_driving_leg=pd.notna(employee_row["total_daily_miles"]),
     )
     if donor_key is None:
         legs = build_fallback_chain(employee_row)
