@@ -25,7 +25,10 @@ donor who had no driving-mode legs, so a donor's raw (unscaled, mode-blind)
 `TRPMILES`/`TRVLCMIN` can never be mistaken for driving distance/duration
 (`docs/validation_results.md` §6's "donor mode-blindness" finding). Within
 that restriction, donors are matched on trip/stop count (exact match first,
-widening to +-1 - `MATCH_TOLERANCES`), then rescaled (never copied
+widening to +-1 - `MATCH_TOLERANCES`; if that still finds nothing, a final
+relaxed tier drops the trip/stop-count restriction entirely rather than
+give up a same-cluster/same-driving-status donor - see `select_donor`),
+then rescaled (never copied
 verbatim): times are shifted so the chain's
 first work-purpose leg and the leg immediately following it land on the
 employee's own drawn `work_arrival_time`/`work_departure_time`
@@ -35,10 +38,10 @@ work-purpose leg anchored specifically to a commute-distance value picked by
 `select_commute_anchor_miles` (`commute_distance_trip_miles` when it
 represents a single uncontaminated commute leg, else
 `commute_distance_survey_miles`) and passed to `rescale_chain_distances`.
-When no donor is close enough in that cluster
-(a real risk for sparse cluster/trip-count combinations - the donor pool is
-bounded by real NHTS respondents per cluster, not by synthetic population
-size), a minimal synthesized home->work->home chain is used instead
+Only when the employee's cluster/driving-status pool has *no* donor at all
+(a real risk for sparse clusters - the donor pool is bounded by real NHTS
+respondents per cluster, not by synthetic population size) is a minimal
+synthesized home->work->home chain used instead
 (`build_fallback_chain`, `chain_source == "fallback"`).
 
 ## ID handling: a deliberate deviation from plan §4
@@ -90,7 +93,8 @@ DONOR_CHAIN_SOURCE = "donor"
 FALLBACK_CHAIN_SOURCE = "fallback"
 
 # plan §3 step 2/3: exact trip/stop-count match first, then widen to +-1
-# before giving up and falling back to a synthesized chain.
+# before select_donor falls through to its own relaxed (no trip/stop-count
+# restriction) tier, and only then to a synthesized fallback chain.
 MATCH_TOLERANCES = (0, 1)
 
 # select_donor: within a given trip/stop-count tolerance tier, a donor whose
@@ -103,8 +107,9 @@ MATCH_TOLERANCES = (0, 1)
 TIME_MATCH_TOLERANCE_MINUTES = 60.0
 
 # Fallback minimal-chain constants (plan §3 step 3) - only reached when a
-# synthetic employee has no close-enough donor *and* one of their own
-# drawn values needed to build even a minimal chain is itself missing.
+# synthetic employee has no donor at all in its cluster/driving-status pool
+# (select_donor's relaxed tier is empty too) *and* one of their own drawn
+# values needed to build even a minimal chain is itself missing.
 # Not a typical code path; see build_fallback_chain.
 FALLBACK_COMMUTE_DURATION_MINUTES = 20.0
 FALLBACK_WORKDAY_MINUTES = 480.0
@@ -364,13 +369,14 @@ def select_donor(
     see `generate_chain_for_employee`, which derives this flag from
     `total_daily_miles`.
 
-    Within each trip/stop-count tolerance tier (the widening loop below),
-    `target_arrival_min`/`target_departure_min` (both minutes since
-    midnight, NaN if not being applied) rank that tier's candidates by donor
-    time-schedule compatibility before falling back to the tier's full,
-    unrestricted candidate set - a *preference* applied strictly within an
-    already-nonempty tier, never a filter that can empty one, so time
-    incompatibility alone can never reach the fallback chain:
+    Within each trip/stop-count tolerance tier (the widening loop below), and
+    again within the relaxed tier described below, `target_arrival_min`/
+    `target_departure_min` (both minutes since midnight, NaN if not being
+    applied) rank that tier's candidates by donor time-schedule compatibility
+    before falling back to the tier's full, unrestricted candidate set - a
+    *preference* applied strictly within an already-nonempty tier, never a
+    filter that can empty one, so time incompatibility alone can never reach
+    the fallback chain (`_select_by_time_preference`):
 
     - Tier A (combined): `abs(own_arrival_min - target_arrival_min) <=
       TIME_MATCH_TOLERANCE_MINUTES`, and either `own_departure_min` or
@@ -385,9 +391,21 @@ def select_donor(
 
     Ties are broken by a seeded random draw against a `PERSON_KEY`-sorted
     candidate list, so donor selection is reproducible given the same `rng`
-    sequence rather than depending on incidental row order. Returns `None`
-    if no donor in this cluster with matching driving status is within
-    tolerance at any widening step (plan §3 step 3's fallback trigger).
+    sequence rather than depending on incidental row order.
+
+    If no donor matches `trips_per_day`/`number_of_stops` at either
+    `MATCH_TOLERANCES` widening step, a final **relaxed tier** is tried
+    before giving up: every donor sharing `cluster_id` and `require_driving_leg`
+    (i.e. `pool` itself, already guaranteed non-empty at this point), with the
+    trip/stop-count restriction dropped entirely but the same Tier A/B/C time
+    preference re-applied. This is what keeps a same-cluster/same-driving-status
+    donor from being discarded in favor of a handcrafted fallback chain purely
+    because its shape didn't happen to fall within +-1 trip/stop. A donor
+    returned from this relaxed tier is still `DONOR_CHAIN_SOURCE`, not
+    `FALLBACK_CHAIN_SOURCE` (see `generate_chain_for_employee`).
+
+    Returns `None` only when the same-cluster/same-driving-status pool itself
+    is empty - the true last resort that reaches `build_fallback_chain`.
     """
     pool = donor_summary.loc[
         (donor_summary["cluster_id"] == cluster_id)
@@ -402,32 +420,57 @@ def select_donor(
         candidates = pool.loc[(trip_diff <= tolerance) & (stop_diff <= tolerance)]
         if candidates.empty:
             continue
-        candidates = candidates.sort_values(PERSON_KEY)
-
-        arrival_compatible = (
-            candidates["own_arrival_min"] - target_arrival_min
-        ).abs() <= TIME_MATCH_TOLERANCE_MINUTES
-        departure_compatible = (
-            candidates["own_departure_min"].isna()
-            | pd.isna(target_departure_min)
-            | (
-                (candidates["own_departure_min"] - target_departure_min).abs()
-                <= TIME_MATCH_TOLERANCE_MINUTES
-            )
+        return _select_by_time_preference(
+            candidates, rng, target_arrival_min, target_departure_min
         )
 
-        tier_a = candidates.loc[arrival_compatible & departure_compatible]
-        tier_b = candidates.loc[arrival_compatible]
-        if not tier_a.empty:
-            chosen_pool = tier_a
-        elif not tier_b.empty:
-            chosen_pool = tier_b
-        else:
-            chosen_pool = candidates
+    # Relaxed tier (plan §3 step 3, Option B): every existing trip/stop-count
+    # tolerance tier came up empty, but `pool` (checked non-empty above) still
+    # has a same-cluster/same-driving-status donor - use it, still preferring
+    # a time-compatible one, rather than reaching for the fallback chain.
+    return _select_by_time_preference(pool, rng, target_arrival_min, target_departure_min)
 
-        choice = chosen_pool.iloc[int(rng.integers(len(chosen_pool)))]
-        return (choice["HOUSEID"], choice["PERSONID"])
-    return None
+
+def _select_by_time_preference(
+    candidates: pd.DataFrame,
+    rng: np.random.Generator,
+    target_arrival_min: float,
+    target_departure_min: float,
+) -> tuple[str, str]:
+    """Shared donor time-compatibility preference (`select_donor`'s Tier
+    A/B/C, see its docstring) applied to an already trip/stop-count-filtered
+    (or, in the relaxed tier, unfiltered) non-empty `candidates` pool.
+
+    Ties within the chosen tier are broken by a seeded random draw against a
+    `PERSON_KEY`-sorted candidate list, so donor selection stays reproducible
+    given the same `rng` sequence rather than depending on incidental row
+    order.
+    """
+    candidates = candidates.sort_values(PERSON_KEY)
+
+    arrival_compatible = (
+        candidates["own_arrival_min"] - target_arrival_min
+    ).abs() <= TIME_MATCH_TOLERANCE_MINUTES
+    departure_compatible = (
+        candidates["own_departure_min"].isna()
+        | pd.isna(target_departure_min)
+        | (
+            (candidates["own_departure_min"] - target_departure_min).abs()
+            <= TIME_MATCH_TOLERANCE_MINUTES
+        )
+    )
+
+    tier_a = candidates.loc[arrival_compatible & departure_compatible]
+    tier_b = candidates.loc[arrival_compatible]
+    if not tier_a.empty:
+        chosen_pool = tier_a
+    elif not tier_b.empty:
+        chosen_pool = tier_b
+    else:
+        chosen_pool = candidates
+
+    choice = chosen_pool.iloc[int(rng.integers(len(chosen_pool)))]
+    return (choice["HOUSEID"], choice["PERSONID"])
 
 
 # --- Rescaling (plan §3 "Rescaling the selected donor chain") ---------------

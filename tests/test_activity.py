@@ -714,6 +714,319 @@ def test_select_donor_with_time_preference_is_reproducible_with_same_rng_seed():
     assert donor_a == donor_b
 
 
+# --- select_donor: relaxed tier (Option B) -----------------------------------
+
+
+def _relaxed_tier_rows(house_id: str, arrival_min: float, following_min: float) -> tuple[dict, ...]:
+    """A six-leg, five-stop cluster donor chain (trip_count=6, stop_count=5)
+    - always outside +-1 of the (2, 1) shape every relaxed-tier test below
+    requests (`MATCH_TOLERANCES` maxes out at +-1), so a donor built from
+    this is reachable only through `select_donor`'s final relaxed tier
+    (trip/stop-count restriction dropped entirely), never the exact or +-1
+    tiers.
+
+    `arrival_min` (minutes since midnight) is the work-arrival leg's
+    ENDTIME, so it sets `own_arrival_min`; `following_min` is the very next
+    leg's STRTTIME, so it sets `own_departure_min` - the two independent
+    knobs every test below uses to control Tier A/B/C time compatibility.
+    Legs 3-6 are same-day filler trips with no bearing on either anchor,
+    ending on a home-purpose leg so the chain is a complete day.
+    """
+    leg_bounds_min = [
+        (arrival_min - 20, arrival_min),
+        (following_min, following_min + 10),
+        (following_min + 15, following_min + 20),
+        (following_min + 25, following_min + 30),
+        (following_min + 35, following_min + 40),
+        (following_min + 45, following_min + 55),
+    ]
+    purposes = [10, 20, 20, 20, 20, 1]
+    return tuple(
+        _trip_row(
+            house_id,
+            "01",
+            f"{i:02d}",
+            ac.minutes_to_hhmm(dep),
+            ac.minutes_to_hhmm(arr),
+            arr - dep,
+            5.0,
+            whytrp1s=purpose,
+        )
+        for i, ((dep, arr), purpose) in enumerate(zip(leg_bounds_min, purposes), start=1)
+    )
+
+
+def _shape_tier_pool() -> pd.DataFrame:
+    """Three cluster-0 driving donors, all requested against a (2, 1) shape:
+
+    - EX1: an exact (2, 1) match.
+    - TOL1: a (3, 2) match - outside exact but within +-1.
+    - RLXA: a (6, 5) match (`_relaxed_tier_rows`) - outside even +-1,
+      reachable only through the relaxed tier. Time-compatible with target
+      arrival=500/departure=1015 (own_arrival_min=510, own_departure_min=1015)
+      so it would also win any time-preference tie-break, isolating "is the
+      trip/stop-count tier honored first" from time preference.
+    """
+    trips = _trips_clean_df(
+        _trip_row("EX1", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("EX1", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1),
+        _trip_row("TOL1", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("TOL1", "01", "02", 1200, 1215, 15, 3.0, whytrp1s=20),
+        _trip_row("TOL1", "01", "03", 1230, 1300, 30, 4.0, whytrp1s=1),
+        *_relaxed_tier_rows("RLXA", arrival_min=510.0, following_min=1015.0),
+    )
+    clusters = _employee_clusters_df([("EX1", "01", 0), ("TOL1", "01", 0), ("RLXA", "01", 0)])
+    legs = ac.build_donor_legs(trips, clusters)
+    return ac.summarize_donor_chains(legs)
+
+
+def test_select_donor_relaxed_tier_prefers_exact_trip_stop_match():
+    summary = _shape_tier_pool()
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("EX1", "01")
+
+
+def test_select_donor_relaxed_tier_prefers_plus_minus_one_match_over_relaxed():
+    summary = _shape_tier_pool()
+    summary = summary.loc[summary["HOUSEID"] != "EX1"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("TOL1", "01")
+
+
+def test_select_donor_relaxed_tier_used_only_when_all_tolerance_tiers_fail():
+    # Only RLXA (a (6, 5) shape) remains - neither the exact nor +-1 tier
+    # can match a (2, 1) request, so only the relaxed tier can return it.
+    summary = _shape_tier_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXA"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("RLXA", "01")
+
+
+def test_select_donor_relaxed_tier_preserves_cluster_filter():
+    # WRONGCLUSTER is an exact (2, 1) match but lives in cluster 1; RLXA is
+    # the only cluster-0 donor and is reachable only via the relaxed tier.
+    # A cluster-0 request must never resolve to WRONGCLUSTER even though
+    # it's a "better" shape match.
+    summary = _shape_tier_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXA"]
+    extra_trips = _trips_clean_df(
+        _trip_row("WRONGCLUSTER", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("WRONGCLUSTER", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1),
+    )
+    extra_clusters = _employee_clusters_df([("WRONGCLUSTER", "01", 1)])
+    extra_legs = ac.build_donor_legs(extra_trips, extra_clusters)
+    summary = pd.concat([summary, ac.summarize_donor_chains(extra_legs)], ignore_index=True)
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("RLXA", "01")
+
+
+def test_select_donor_relaxed_tier_preserves_driving_status_filter():
+    # WRONGDRIVE is an exact (2, 1) match, same cluster, but non-driving;
+    # a require_driving_leg=True request must never resolve to it even
+    # though it's a "better" shape match than the relaxed-tier-only RLXA.
+    summary = _shape_tier_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXA"]
+    extra_trips = _trips_clean_df(
+        _trip_row("WRONGDRIVE", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=1),
+        _trip_row("WRONGDRIVE", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1),
+    )
+    extra_clusters = _employee_clusters_df([("WRONGDRIVE", "01", 0)])
+    extra_legs = ac.build_donor_legs(extra_trips, extra_clusters)
+    summary = pd.concat([summary, ac.summarize_donor_chains(extra_legs)], ignore_index=True)
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("RLXA", "01")
+
+
+def _relaxed_tier_time_pref_pool() -> pd.DataFrame:
+    """Three cluster-0 driving donors, all a (6, 5) shape - outside +-1 of
+    the (2, 1) shape requested below, so every donor here is reachable only
+    through the relaxed tier:
+
+    - RLXA: own_arrival_min=510, own_departure_min=1015 - compatible with
+      both target_arrival_min=500 and target_departure_min=1015 (Tier A).
+    - RLXC: own_arrival_min=510 (arrival-compatible), own_departure_min=1320
+      (departure-incompatible) (Tier B).
+    - RLXD: own_arrival_min=720, own_departure_min=1080 - incompatible with
+      both targets (Tier C).
+    """
+    trips = _trips_clean_df(
+        *_relaxed_tier_rows("RLXA", arrival_min=510.0, following_min=1015.0),
+        *_relaxed_tier_rows("RLXC", arrival_min=510.0, following_min=1320.0),
+        *_relaxed_tier_rows("RLXD", arrival_min=720.0, following_min=1080.0),
+    )
+    clusters = _employee_clusters_df([("RLXA", "01", 0), ("RLXC", "01", 0), ("RLXD", "01", 0)])
+    legs = ac.build_donor_legs(trips, clusters)
+    return ac.summarize_donor_chains(legs)
+
+
+def test_select_donor_relaxed_tier_prefers_combined_arrival_and_departure_compatible_donor():
+    summary = _relaxed_tier_time_pref_pool()
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("RLXA", "01")
+
+
+def test_select_donor_relaxed_tier_prefers_arrival_only_compatible_donor_when_no_combined_match():
+    summary = _relaxed_tier_time_pref_pool()
+    summary = summary.loc[summary["HOUSEID"] != "RLXA"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("RLXC", "01")
+
+
+def test_select_donor_relaxed_tier_falls_back_to_unrestricted_time_match():
+    # Only RLXD (time-incompatible on both arrival and departure) remains -
+    # the relaxed tier's own Tier C - select_donor must still return it
+    # rather than None, since a same-cluster/same-driving-status donor
+    # exists.
+    summary = _relaxed_tier_time_pref_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXD"]
+
+    donor = ac.select_donor(
+        0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+        rng=np.random.default_rng(0), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+
+    assert donor == ("RLXD", "01")
+
+
+def test_select_donor_relaxed_tier_returns_donor_when_compatible_donor_exists():
+    # Same setup as above - across many rng draws, select_donor must never
+    # return None here, since an otherwise-eligible (same cluster, same
+    # driving status) donor exists, even though no trip/stop-count tier
+    # matched.
+    summary = _relaxed_tier_time_pref_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXD"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor is not None
+
+
+def test_select_donor_relaxed_tier_returns_none_only_when_pool_is_entirely_empty():
+    # RLXA exists only in cluster 0; requesting cluster 1 (no donor at all,
+    # not even a shape-mismatched one) must still return None rather than
+    # reaching across clusters.
+    summary = _relaxed_tier_time_pref_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXA"]
+
+    donor = ac.select_donor(
+        1, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+        rng=np.random.default_rng(0), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+
+    assert donor is None
+
+
+def test_select_donor_relaxed_tier_is_reproducible_with_same_rng_seed():
+    summary = _relaxed_tier_time_pref_pool()
+    summary = summary.loc[summary["HOUSEID"] == "RLXD"]
+
+    donor_a = ac.select_donor(
+        0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+    donor_b = ac.select_donor(
+        0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+
+    assert donor_a == donor_b
+
+
+def test_generate_synthetic_activity_uses_relaxed_donor_instead_of_fallback(population):
+    # Extends the existing `population` fixture (SYN-00000001..3 exact/+-1
+    # donor-matched, SYN-00000004 in an entirely donor-less cluster 99) with
+    # a fifth employee requesting a (2, 1) shape in a cluster whose only
+    # donor (RLXA) is a (6, 5) shape - outside +-1, so under the old
+    # behavior this employee would also have used build_fallback_chain.
+    # Confirms Option B routes it to the relaxed donor instead, while
+    # SYN-00000004 (truly donor-less cluster) still falls back, and every
+    # employee still produces exactly one chain (no employee gained or
+    # dropped by this change).
+    employees, clusters, trips = population
+    extra_trips = _trips_clean_df(
+        *_relaxed_tier_rows("RLXA", arrival_min=510.0, following_min=1015.0)
+    )
+    extra_clusters = _employee_clusters_df([("RLXA", "01", 2)])
+    trips = pd.concat([trips, extra_trips], ignore_index=True)
+    clusters = pd.concat([clusters, extra_clusters], ignore_index=True)
+    employees = pd.concat(
+        [
+            employees,
+            _synthetic_employees_df(
+                _employee_row(
+                    "SYN-00000005", cluster_id=2, trips_per_day=2, number_of_stops=1,
+                    work_arrival_time=830.0, work_departure_time=1700.0,
+                )
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    activity = ac.generate_synthetic_activity(employees, clusters, trips, seed=0)
+
+    assert activity["synthetic_employee_id"].nunique() == len(employees)
+    per_employee_source = activity.drop_duplicates("synthetic_employee_id").set_index(
+        "synthetic_employee_id"
+    )["chain_source"]
+    assert per_employee_source["SYN-00000005"] == ac.DONOR_CHAIN_SOURCE
+    # RLXA's own 6 legs, not build_fallback_chain's fixed 2-leg minimal chain.
+    assert len(activity.loc[activity["synthetic_employee_id"] == "SYN-00000005"]) == 6
+    # SYN-00000004's cluster (99) still has no donor at all - still fallback.
+    assert per_employee_source["SYN-00000004"] == ac.FALLBACK_CHAIN_SOURCE
+    # Previously donor-matched employees (exact/+-1 tiers) are unaffected.
+    assert per_employee_source["SYN-00000001"] == ac.DONOR_CHAIN_SOURCE
+    assert per_employee_source["SYN-00000002"] == ac.DONOR_CHAIN_SOURCE
+    assert per_employee_source["SYN-00000003"] == ac.DONOR_CHAIN_SOURCE
+
+
 def test_generate_chain_for_employee_prefers_time_compatible_donor_end_to_end():
     # Confirms generate_chain_for_employee actually converts the employee's
     # own work_arrival_time/work_departure_time and threads them through to
