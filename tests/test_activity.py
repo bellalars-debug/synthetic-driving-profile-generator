@@ -338,6 +338,46 @@ def test_summarize_donor_chains_has_driving_leg_true_when_any_leg_drives():
     assert bool(summary.loc[("D1", "01"), "has_driving_leg"]) is True
 
 
+def test_summarize_donor_chains_computes_own_arrival_min():
+    # D1: work-arrival leg ENDTIME=830 -> own_arrival_min = 8*60+30 = 510.
+    trips, clusters = _sample_trips_and_clusters()
+    legs = ac.build_donor_legs(trips, clusters)
+
+    summary = ac.summarize_donor_chains(legs).set_index(["HOUSEID", "PERSONID"])
+
+    assert summary.loc[("D1", "01"), "own_arrival_min"] == 8 * 60 + 30
+
+
+def test_summarize_donor_chains_computes_own_departure_min_from_next_leg():
+    # D1's leg immediately after the work-arrival leg (the loop trip is
+    # excluded) departs at STRTTIME=1700 -> own_departure_min = 17*60 = 1020.
+    trips, clusters = _sample_trips_and_clusters()
+    legs = ac.build_donor_legs(trips, clusters)
+
+    summary = ac.summarize_donor_chains(legs).set_index(["HOUSEID", "PERSONID"])
+
+    assert summary.loc[("D1", "01"), "own_departure_min"] == 17 * 60
+
+
+def test_summarize_donor_chains_own_departure_min_is_nan_when_arrival_leg_is_last():
+    # D13: a single leg, itself the first (and only) work-purpose arrival -
+    # there is no "leg immediately after" to derive own_departure_min from.
+    trips, clusters = _sample_trips_and_clusters()
+    trips = pd.concat(
+        [trips, _trips_clean_df(_trip_row("D13", "01", "01", 800, 830, 30, 10.0, whytrp1s=10))],
+        ignore_index=True,
+    )
+    clusters = pd.concat(
+        [clusters, _employee_clusters_df([("D13", "01", 0)])], ignore_index=True
+    )
+    legs = ac.build_donor_legs(trips, clusters)
+
+    summary = ac.summarize_donor_chains(legs).set_index(["HOUSEID", "PERSONID"])
+
+    assert summary.loc[("D13", "01"), "own_arrival_min"] == 8 * 60 + 30
+    assert pd.isna(summary.loc[("D13", "01"), "own_departure_min"])
+
+
 def test_summarize_donor_chains_has_driving_leg_false_when_no_leg_drives():
     # D12: every leg is a non-driving mode (walk) - has_driving_leg must be
     # False even though the chain otherwise has a normal work-leg shape.
@@ -488,6 +528,233 @@ def test_select_donor_is_reproducible_with_same_rng_seed():
     donor_b = ac.select_donor(0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True)
 
     assert donor_a == donor_b
+
+
+# --- select_donor: donor time-schedule preference (S4) --------------------------
+
+
+def _time_pref_donor_pool() -> pd.DataFrame:
+    """Three cluster-0 donors, all an exact (2, 1) shape:
+
+    - DTA: work-arrival ENDTIME=830 (own_arrival_min=510), next leg
+      STRTTIME=1700 (own_departure_min=1020) - compatible on both arrival
+      and departure with the targets used below (500, 1015).
+    - DTC: work-arrival ENDTIME=830 (own_arrival_min=510, arrival-compatible
+      with target 500), but next leg STRTTIME=2200
+      (own_departure_min=1320) - departure incompatible with target 1015.
+    - DTD: work-arrival ENDTIME=1200 (own_arrival_min=720) and next leg
+      STRTTIME=1800 (own_departure_min=1080) - incompatible on both arrival
+      and departure with the targets used below.
+    """
+    trips = _trips_clean_df(
+        _trip_row("DTA", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTA", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1),
+        _trip_row("DTC", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTC", "01", "02", 2200, 2230, 30, 10.0, whytrp1s=1),
+        _trip_row("DTD", "01", "01", 1130, 1200, 30, 10.0, whytrp1s=10),
+        _trip_row("DTD", "01", "02", 1800, 1830, 30, 10.0, whytrp1s=1),
+    )
+    clusters = _employee_clusters_df([("DTA", "01", 0), ("DTC", "01", 0), ("DTD", "01", 0)])
+    legs = ac.build_donor_legs(trips, clusters)
+    return ac.summarize_donor_chains(legs)
+
+
+def test_select_donor_prefers_combined_arrival_and_departure_compatible_donor():
+    summary = _time_pref_donor_pool()
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("DTA", "01")
+
+
+def test_select_donor_prefers_arrival_only_compatible_donor_when_no_combined_match():
+    # Drop DTA so no donor is compatible on both arrival and departure; DTC
+    # remains arrival-compatible (own_arrival_min=510 vs target 500) even
+    # though its own_departure_min (1320) is far from the target (1015).
+    summary = _time_pref_donor_pool()
+    summary = summary.loc[summary["HOUSEID"] != "DTA"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor == ("DTC", "01")
+
+
+def test_select_donor_falls_back_to_unrestricted_pool_when_no_time_compatible_donor():
+    # Only DTD remains, and its own_arrival_min (720) is far outside
+    # TIME_MATCH_TOLERANCE_MINUTES of the target (500) - Tier A and Tier B
+    # are both empty, but a same-shape donor still exists, so select_donor
+    # must still return it (Tier C) rather than None.
+    summary = _time_pref_donor_pool()
+    summary = summary.loc[summary["HOUSEID"] == "DTD"]
+
+    donor = ac.select_donor(
+        0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+        rng=np.random.default_rng(0), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+
+    assert donor == ("DTD", "01")
+
+
+def test_select_donor_time_incompatibility_alone_never_triggers_fallback():
+    # Same setup as above (only a time-incompatible donor available) - the
+    # important assertion is simply that select_donor never returns None
+    # here, across many rng draws, since an otherwise-eligible donor exists.
+    summary = _time_pref_donor_pool()
+    summary = summary.loc[summary["HOUSEID"] == "DTD"]
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=500.0, target_departure_min=1015.0,
+        )
+        assert donor is not None
+
+
+def test_select_donor_applies_cluster_filter_before_time_compatibility():
+    # DTA (cluster 0) is time-compatible with the targets; give it a
+    # cluster-1 twin (DTA2) that is even more time-compatible (exact match)
+    # to confirm the cluster restriction is applied before any time
+    # preference could otherwise pull in a donor from the wrong cluster.
+    summary = _time_pref_donor_pool()
+    extra_trips = _trips_clean_df(
+        _trip_row("DTA2", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTA2", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1),
+    )
+    extra_clusters = _employee_clusters_df([("DTA2", "01", 1)])
+    extra_legs = ac.build_donor_legs(extra_trips, extra_clusters)
+    summary = pd.concat([summary, ac.summarize_donor_chains(extra_legs)], ignore_index=True)
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=510.0, target_departure_min=1020.0,
+        )
+        assert donor == ("DTA", "01")
+
+
+def test_select_donor_applies_driving_mode_filter_before_time_compatibility():
+    # DWLK is a non-driving donor with the exact same (time-compatible)
+    # schedule as DTA; require_driving_leg=True must still never return it.
+    summary = _time_pref_donor_pool()
+    extra_trips = _trips_clean_df(
+        _trip_row("DWLK", "01", "01", 800, 830, 30, 10.0, whytrp1s=10, trptrans=1),
+        _trip_row("DWLK", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1, trptrans=1),
+    )
+    extra_clusters = _employee_clusters_df([("DWLK", "01", 0)])
+    extra_legs = ac.build_donor_legs(extra_trips, extra_clusters)
+    summary = pd.concat([summary, ac.summarize_donor_chains(extra_legs)], ignore_index=True)
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=510.0, target_departure_min=1020.0,
+        )
+        assert donor == ("DTA", "01")
+
+
+def test_select_donor_applies_trip_and_stop_count_filter_before_time_compatibility():
+    # D2 (3 trips, 2 stops, cluster 0) is time-compatible with the target
+    # (same 830/1700 schedule as DTA) but does not match the requested
+    # (2, 1) shape within MATCH_TOLERANCES; only DTA (an exact (2, 1) match)
+    # should ever be returned even though both are equally time-compatible.
+    _, base_clusters = _sample_trips_and_clusters()
+    d2_trips = _trips_clean_df(
+        _trip_row("D2", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("D2", "01", "02", 1200, 1215, 15, 3.0, whytrp1s=20),
+        _trip_row("D2", "01", "03", 1230, 1300, 30, 4.0, whytrp1s=1),
+    )
+    dta_trips = _trips_clean_df(
+        _trip_row("DTA", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTA", "01", "02", 1700, 1730, 30, 10.0, whytrp1s=1),
+    )
+    all_trips = pd.concat([d2_trips, dta_trips], ignore_index=True)
+    all_clusters = pd.concat(
+        [
+            base_clusters.loc[base_clusters["HOUSEID"] == "D2"],
+            _employee_clusters_df([("DTA", "01", 0)]),
+        ],
+        ignore_index=True,
+    )
+    legs = ac.build_donor_legs(all_trips, all_clusters)
+    summary = ac.summarize_donor_chains(legs)
+
+    for seed in range(10):
+        donor = ac.select_donor(
+            0, trips_per_day=2, number_of_stops=1, donor_summary=summary,
+            rng=np.random.default_rng(seed), require_driving_leg=True,
+            target_arrival_min=510.0, target_departure_min=1020.0,
+        )
+        assert donor == ("DTA", "01")
+
+
+def test_select_donor_with_time_preference_is_reproducible_with_same_rng_seed():
+    summary = _time_pref_donor_pool()
+
+    donor_a = ac.select_donor(
+        0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+    donor_b = ac.select_donor(
+        0, 2, 1, summary, np.random.default_rng(7), require_driving_leg=True,
+        target_arrival_min=500.0, target_departure_min=1015.0,
+    )
+
+    assert donor_a == donor_b
+
+
+def test_generate_chain_for_employee_prefers_time_compatible_donor_end_to_end():
+    # Confirms generate_chain_for_employee actually converts the employee's
+    # own work_arrival_time/work_departure_time and threads them through to
+    # select_donor, not just that select_donor's tiering works in isolation.
+    # Each donor's second (non-anchor) leg has a distinct raw TRPMILES
+    # (5 / 20 / 30) so that leg's post-rescale *duration* - which depends on
+    # the donor's own raw-miles-to-rescaled-miles ratio, unlike distance,
+    # which is always forced to exactly the remaining budget for a single
+    # "other" leg - reveals which donor was actually selected.
+    trips = _trips_clean_df(
+        _trip_row("DTA", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTA", "01", "02", 1700, 1730, 30, 5.0, whytrp1s=1),
+        _trip_row("DTC", "01", "01", 800, 830, 30, 10.0, whytrp1s=10),
+        _trip_row("DTC", "01", "02", 2200, 2230, 30, 20.0, whytrp1s=1),
+        _trip_row("DTD", "01", "01", 1130, 1200, 30, 10.0, whytrp1s=10),
+        _trip_row("DTD", "01", "02", 1800, 1830, 30, 30.0, whytrp1s=1),
+    )
+    clusters = _employee_clusters_df([("DTA", "01", 0), ("DTC", "01", 0), ("DTD", "01", 0)])
+    donor_legs = ac.build_donor_legs(trips, clusters)
+    donor_summary = ac.summarize_donor_chains(donor_legs)
+    donor_legs_by_person = {k: g for k, g in donor_legs.groupby(ac.PERSON_KEY)}
+    # DTA's own schedule (830 arrival / 1700 departure) is within 60 minutes
+    # of this employee's own target on both ends; DTC only on arrival; DTD
+    # on neither.
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            work_arrival_time=820.0, work_departure_time=1710.0,
+            total_daily_miles=20.0, commute_distance_survey_miles=10.0,
+        )
+    )
+
+    for seed in range(10):
+        chain = ac.generate_chain_for_employee(
+            employee, donor_summary, donor_legs_by_person, np.random.default_rng(seed)
+        )
+        assert (chain["chain_source"] == ac.DONOR_CHAIN_SOURCE).all()
+        other_leg = chain.loc[chain["trip_purpose"] != ac.TRIP_PURPOSE_WORK, "duration"]
+        other_leg_duration = other_leg.iloc[0]
+        # DTA: remaining budget 10mi / donor raw 5mi -> scale 2 -> 30*2=60min.
+        assert other_leg_duration == pytest.approx(60.0)
 
 
 # --- rescale_chain_times ---------------------------------------------------------

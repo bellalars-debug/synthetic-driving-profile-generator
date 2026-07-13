@@ -93,6 +93,15 @@ FALLBACK_CHAIN_SOURCE = "fallback"
 # before giving up and falling back to a synthesized chain.
 MATCH_TOLERANCES = (0, 1)
 
+# select_donor: within a given trip/stop-count tolerance tier, a donor whose
+# own workplace arrival/departure falls within this many minutes of the
+# synthetic employee's target arrival/departure is preferred over one that
+# doesn't - reduces excess variance in non-anchor activity times without
+# ever causing a fallback on time-incompatibility alone (time preference is
+# applied only as a within-tier ranking, never as a filter that can empty a
+# tier - see select_donor).
+TIME_MATCH_TOLERANCE_MINUTES = 60.0
+
 # Fallback minimal-chain constants (plan §3 step 3) - only reached when a
 # synthetic employee has no close-enough donor *and* one of their own
 # drawn values needed to build even a minimal chain is itself missing.
@@ -259,9 +268,38 @@ def build_donor_legs(trips_clean: pd.DataFrame, employee_clusters: pd.DataFrame)
     return legs.loc[is_valid_donor].reset_index(drop=True)
 
 
+def _own_workplace_times(group: pd.DataFrame) -> pd.Series:
+    """Per-donor `own_arrival_min`/`own_departure_min` for
+    `summarize_donor_chains`: the arrival time (minutes since midnight) of
+    the donor's first work-purpose leg, and the departure time of the leg
+    immediately following it (NaN if that arrival leg is the donor's last).
+
+    `group` is already in the donor's own chronological order
+    (`build_donor_legs`), mirroring `rescale_chain_times`'s own arrival-leg/
+    departure-leg indexing. `summarize_donor_chains` calls this over every
+    donor group (including one with no work-purpose leg at all, dropped
+    afterward via `has_work_leg`), so a group with no work leg returns NaN
+    for both rather than raising.
+    """
+    work_mask = (group["trip_purpose"] == TRIP_PURPOSE_WORK).to_numpy()
+    if not work_mask.any():
+        return pd.Series({"own_arrival_min": float("nan"), "own_departure_min": float("nan")})
+    arrival_idx = int(np.flatnonzero(work_mask)[0])
+    own_arrival_min = hhmm_to_minutes(group["ENDTIME"].iloc[arrival_idx])
+
+    departure_idx = arrival_idx + 1
+    if departure_idx < len(group):
+        own_departure_min = hhmm_to_minutes(group["STRTTIME"].iloc[departure_idx])
+    else:
+        own_departure_min = float("nan")
+
+    return pd.Series({"own_arrival_min": own_arrival_min, "own_departure_min": own_departure_min})
+
+
 def summarize_donor_chains(donor_legs: pd.DataFrame) -> pd.DataFrame:
     """One row per donor respondent: `cluster_id`, chain shape
-    (`trip_count`, `stop_count`), and `has_driving_leg`, restricted to
+    (`trip_count`, `stop_count`), `has_driving_leg`, and own workplace
+    arrival/departure (`own_arrival_min`/`own_departure_min`), restricted to
     donors who actually reached a work-purpose destination that day.
 
     A donor without a work leg has no anchor for `rescale_chain_times`'s
@@ -275,6 +313,14 @@ def summarize_donor_chains(donor_legs: pd.DataFrame) -> pd.DataFrame:
     have driven that day depends on the requesting synthetic employee's own
     `total_daily_miles` (null vs. not), which this function doesn't see.
     It's kept in the output so `select_donor` can filter on it per-call.
+
+    `own_arrival_min`/`own_departure_min` (`_own_workplace_times`) are the
+    donor's own workplace arrival/departure, in minutes since midnight,
+    computed the same way `rescale_chain_times` locates its arrival/
+    departure legs - `select_donor` uses these to prefer a donor whose own
+    schedule is already close to the requesting employee's target schedule
+    (reduces excess variance in non-anchor activity times) without ever
+    filtering a donor out on time grounds alone.
     """
     grouped = donor_legs.groupby(PERSON_KEY)
     summary = grouped.agg(
@@ -284,7 +330,12 @@ def summarize_donor_chains(donor_legs: pd.DataFrame) -> pd.DataFrame:
         has_work_leg=("trip_purpose", lambda s: bool((s == TRIP_PURPOSE_WORK).any())),
         has_driving_leg=("is_driving_leg", "any"),
     ).reset_index()
-    return summary.loc[summary["has_work_leg"]].drop(columns="has_work_leg").reset_index(drop=True)
+    summary = (
+        summary.loc[summary["has_work_leg"]].drop(columns="has_work_leg").reset_index(drop=True)
+    )
+
+    own_times = grouped.apply(_own_workplace_times).reset_index()
+    return summary.merge(own_times, on=PERSON_KEY, how="left")
 
 
 def select_donor(
@@ -294,6 +345,8 @@ def select_donor(
     donor_summary: pd.DataFrame,
     rng: np.random.Generator,
     require_driving_leg: bool,
+    target_arrival_min: float = float("nan"),
+    target_departure_min: float = float("nan"),
 ) -> tuple[str, str] | None:
     """Pick one donor `(HOUSEID, PERSONID)` from `donor_summary` sharing
     `cluster_id` and matching `require_driving_leg` against the donor's own
@@ -310,6 +363,25 @@ def select_donor(
     real (unscaled) vehicle mileage can leak into that employee's chain -
     see `generate_chain_for_employee`, which derives this flag from
     `total_daily_miles`.
+
+    Within each trip/stop-count tolerance tier (the widening loop below),
+    `target_arrival_min`/`target_departure_min` (both minutes since
+    midnight, NaN if not being applied) rank that tier's candidates by donor
+    time-schedule compatibility before falling back to the tier's full,
+    unrestricted candidate set - a *preference* applied strictly within an
+    already-nonempty tier, never a filter that can empty one, so time
+    incompatibility alone can never reach the fallback chain:
+
+    - Tier A (combined): `abs(own_arrival_min - target_arrival_min) <=
+      TIME_MATCH_TOLERANCE_MINUTES`, and either `own_departure_min` or
+      `target_departure_min` is NaN, or their difference is also within
+      `TIME_MATCH_TOLERANCE_MINUTES`.
+    - Tier B (arrival-only): Tier A empty, so just the arrival condition
+      above.
+    - Tier C (unrestricted): Tier B also empty (including whenever
+      `target_arrival_min` itself is NaN, since no donor can then satisfy
+      Tier A/B) - the tier's full candidate set, exactly as before this
+      preference existed.
 
     Ties are broken by a seeded random draw against a `PERSON_KEY`-sorted
     candidate list, so donor selection is reproducible given the same `rng`
@@ -328,10 +400,33 @@ def select_donor(
     stop_diff = (pool["stop_count"] - number_of_stops).abs()
     for tolerance in MATCH_TOLERANCES:
         candidates = pool.loc[(trip_diff <= tolerance) & (stop_diff <= tolerance)]
-        if not candidates.empty:
-            candidates = candidates.sort_values(PERSON_KEY)
-            choice = candidates.iloc[int(rng.integers(len(candidates)))]
-            return (choice["HOUSEID"], choice["PERSONID"])
+        if candidates.empty:
+            continue
+        candidates = candidates.sort_values(PERSON_KEY)
+
+        arrival_compatible = (
+            candidates["own_arrival_min"] - target_arrival_min
+        ).abs() <= TIME_MATCH_TOLERANCE_MINUTES
+        departure_compatible = (
+            candidates["own_departure_min"].isna()
+            | pd.isna(target_departure_min)
+            | (
+                (candidates["own_departure_min"] - target_departure_min).abs()
+                <= TIME_MATCH_TOLERANCE_MINUTES
+            )
+        )
+
+        tier_a = candidates.loc[arrival_compatible & departure_compatible]
+        tier_b = candidates.loc[arrival_compatible]
+        if not tier_a.empty:
+            chosen_pool = tier_a
+        elif not tier_b.empty:
+            chosen_pool = tier_b
+        else:
+            chosen_pool = candidates
+
+        choice = chosen_pool.iloc[int(rng.integers(len(chosen_pool)))]
+        return (choice["HOUSEID"], choice["PERSONID"])
     return None
 
 
@@ -626,6 +721,13 @@ def generate_chain_for_employee(
     Requires the selected donor's `has_driving_leg` to match whether this
     employee's own `total_daily_miles` is non-null - see `select_donor`'s
     `require_driving_leg` docstring (donor mode-blindness fix).
+
+    Also passes this employee's own `work_arrival_time`/`work_departure_time`
+    (converted to minutes since midnight) through to `select_donor` as
+    `target_arrival_min`/`target_departure_min`, so donor selection can
+    prefer a donor whose own workplace schedule is already close to this
+    employee's target schedule (see `select_donor`'s tiered time-preference
+    docstring).
     """
     donor_key = select_donor(
         employee_row["cluster_id"],
@@ -634,6 +736,8 @@ def generate_chain_for_employee(
         donor_summary,
         rng,
         require_driving_leg=pd.notna(employee_row["total_daily_miles"]),
+        target_arrival_min=hhmm_to_minutes(employee_row["work_arrival_time"]),
+        target_departure_min=hhmm_to_minutes(employee_row["work_departure_time"]),
     )
     if donor_key is None:
         legs = build_fallback_chain(employee_row)
