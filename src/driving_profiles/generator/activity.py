@@ -31,8 +31,11 @@ first work-purpose leg and the leg immediately following it land on the
 employee's own drawn `work_arrival_time`/`work_departure_time`
 (`rescale_chain_times`), and distances/durations are scaled so the chain's
 total matches `total_daily_miles`/`total_driving_minutes`, with the
-work-purpose leg anchored specifically to `commute_distance_survey_miles`
-(`rescale_chain_distances`). When no donor is close enough in that cluster
+work-purpose leg anchored specifically to a commute-distance value picked by
+`select_commute_anchor_miles` (`commute_distance_trip_miles` when it
+represents a single uncontaminated commute leg, else
+`commute_distance_survey_miles`) and passed to `rescale_chain_distances`.
+When no donor is close enough in that cluster
 (a real risk for sparse cluster/trip-count combinations - the donor pool is
 bounded by real NHTS respondents per cluster, not by synthetic population
 size), a minimal synthesized home->work->home chain is used instead
@@ -68,6 +71,7 @@ from driving_profiles.features.build_features import (
     WORK_PURPOSE_WHYTRP1S_CODE,
 )
 from driving_profiles.generator import sample as sample_module
+from driving_profiles.generator.time_utils import MINUTES_PER_DAY, hhmm_to_minutes, minutes_to_hhmm
 from driving_profiles.utils import random_seed
 
 logger = logging.getLogger(__name__)
@@ -112,8 +116,6 @@ ASSUMED_AVERAGE_SPEED_MPH = 30.0
 # the regular trip file (~1.4% of trips_clean.parquet).
 MAX_PLAUSIBLE_LEG_MILES = 150.0
 
-MINUTES_PER_DAY = 24 * 60
-
 DONOR_LEG_COLUMNS = [
     "HOUSEID",
     "PERSONID",
@@ -148,43 +150,14 @@ OUTPUT_COLUMNS = [
 
 
 # --- Time-of-day helpers -----------------------------------------------------
-
-
-def hhmm_to_minutes(hhmm: float) -> float:
-    """Convert an NHTS-style HHMM-encoded time-of-day value to minutes since
-    midnight.
-
-    Handles jittered inputs whose "minutes" component isn't in [0, 60) -
-    real in this project's `work_arrival_time`/`work_departure_time`
-    (`sample.py`'s Gaussian jitter perturbs the raw HHMM number directly,
-    not a minutes-since-midnight value, so e.g. 830 + 50 = 880 is a
-    legitimate jittered output even though "8:80" isn't a valid clock
-    reading) - by treating the hundreds-and-up digits as hours and the
-    remainder as minutes literally: `880` decodes as hour=8, minute=80 ->
-    560 minutes (9:20am), not as an error. `minutes_to_hhmm` is this
-    function's exact inverse and always re-encodes into a valid (minute in
-    [0, 60)) HHMM value.
-    """
-    if pd.isna(hhmm):
-        return float("nan")
-    hours, minutes = divmod(float(hhmm), 100)
-    return hours * 60 + minutes
-
-
-def minutes_to_hhmm(minutes: float) -> float:
-    """Inverse of `hhmm_to_minutes`: minutes since midnight -> HHMM, always
-    with a valid (< 60) minute component.
-
-    Clips (never wraps) to [0, MINUTES_PER_DAY - 1) - clipping is monotonic
-    non-decreasing, so it can never reorder two already-ordered timestamps,
-    unlike a modulo wraparound which could place a late offset-shifted leg
-    before an earlier one.
-    """
-    if pd.isna(minutes):
-        return float("nan")
-    minutes = min(max(float(minutes), 0.0), MINUTES_PER_DAY - 1)
-    hours, mins = divmod(minutes, 60)
-    return hours * 100 + mins
+#
+# hhmm_to_minutes/minutes_to_hhmm/MINUTES_PER_DAY now live in
+# generator/time_utils.py (imported above) so generator/sample.py can also
+# convert to/from true minutes-since-midnight when jittering time-of-day
+# fields, without an import cycle (this module already imports sample.py).
+# Re-imported into this module's namespace so existing call sites
+# (`ac.hhmm_to_minutes`, etc., including in tests and validation/) keep
+# working unchanged.
 
 
 # --- Donor pool construction (plan §3 step 1) --------------------------------
@@ -611,6 +584,35 @@ def _finalize_chain(legs: pd.DataFrame, employee_id: str, chain_source: str) -> 
     return legs[OUTPUT_COLUMNS]
 
 
+def select_commute_anchor_miles(employee_row: pd.Series) -> float:
+    """Pick the work-leg rescale anchor for `rescale_chain_distances`:
+    `commute_distance_trip_miles` when it represents a single, uncontaminated
+    commute leg, else `commute_distance_survey_miles` (the prior, always-used
+    anchor).
+
+    `commute_distance_trip_miles` (`build_features.py`'s
+    `build_commute_features`) sums `TRPMILES` over *every* work-purpose leg
+    in the day, so it only matches "the one commute leg"
+    `rescale_chain_distances` anchors to when there was exactly one
+    (`work_trip_count == 1`) - otherwise it silently includes a second
+    midday work-purpose leg (plan §5's fragmented-dwell-window case) and
+    would overstate the commute. It is also, unlike
+    `commute_distance_survey_miles`, not bounded by any upstream
+    plausibility filter, so `MAX_PLAUSIBLE_LEG_MILES` (the same bound
+    `build_donor_legs` already applies to a usable donor leg) guards against
+    its own uncapped tail. `commute_distance_survey_miles` remains the
+    fallback in every other case, unchanged from prior behavior.
+    """
+    trip_miles = employee_row["commute_distance_trip_miles"]
+    if (
+        employee_row["work_trip_count"] == 1
+        and pd.notna(trip_miles)
+        and trip_miles <= MAX_PLAUSIBLE_LEG_MILES
+    ):
+        return trip_miles
+    return employee_row["commute_distance_survey_miles"]
+
+
 def generate_chain_for_employee(
     employee_row: pd.Series,
     donor_summary: pd.DataFrame,
@@ -642,7 +644,7 @@ def generate_chain_for_employee(
             donor_legs, employee_row["work_arrival_time"], employee_row["work_departure_time"]
         )
         legs = rescale_chain_distances(
-            legs, employee_row["total_daily_miles"], employee_row["commute_distance_survey_miles"]
+            legs, employee_row["total_daily_miles"], select_commute_anchor_miles(employee_row)
         )
         chain_source = DONOR_CHAIN_SOURCE
 

@@ -168,6 +168,8 @@ def small_pipeline(tmp_path):
             "vehicle_per_driver_adequate": [True, True],
             "used_household_vehicle": [True, True],
             "commute_distance_survey_miles": [10.0, 10.0],
+            "commute_distance_trip_miles": [float("nan"), float("nan")],
+            "work_trip_count": [1, 1],
             "commute_duration_minutes": [30.0, 30.0],
             "work_arrival_time": [830.0, 830.0],
             "work_departure_time": [1700.0, 1700.0],

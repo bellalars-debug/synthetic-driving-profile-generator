@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from driving_profiles.generator import sample as sm
+from driving_profiles.generator import time_utils as tu
 
 FEATURE_COLUMNS = [
     "age",
@@ -277,6 +278,142 @@ def test_sample_employees_is_reproducible_with_same_seed():
     sampled_b = sm.sample_employees(clustered, cluster_sampling, seed=3)
 
     pd.testing.assert_frame_equal(sampled_a, sampled_b)
+
+
+# --- time-of-day jitter (minutes-since-midnight, not raw HHMM) ----------------
+
+# Straddles the 759->800 hour boundary: raw HHMM units jump by 41 there
+# (759 -> 800) even though true elapsed time is 1 minute, so the raw-HHMM
+# within-cluster std is inflated relative to the true minutes-since-midnight
+# std. This is the exact shape of input that would have caused the old
+# raw-HHMM jitter to use a too-wide sigma.
+_HOUR_BOUNDARY_ARRIVALS = [755.0, 756.0, 757.0, 758.0, 759.0, 800.0, 801.0, 802.0, 803.0, 804.0]
+
+
+def test_sample_employees_time_jitter_produces_valid_minute_components():
+    rows = [
+        _employee_row(
+            f"H{i}", cluster_id=0, work_arrival_time=hhmm, work_departure_time=hhmm + 900.0
+        )
+        for i, hhmm in enumerate(_HOUR_BOUNDARY_ARRIVALS)
+    ]
+    clustered = _employee_clusters_df(*rows)
+    cluster_sampling = pd.Series({0: 2000}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sampled = sm.sample_employees(clustered, cluster_sampling, jitter_scale=5.0, seed=0)
+
+    for column in ("work_arrival_time", "work_departure_time"):
+        minute_component = sampled[column].dropna() % 100
+        assert (minute_component >= 0).all()
+        assert (minute_component < 60).all()
+
+
+def test_sample_employees_time_jitter_uses_minutes_space_std_not_raw_hhmm_std():
+    rows = [
+        _employee_row(f"H{i}", cluster_id=0, work_arrival_time=hhmm)
+        for i, hhmm in enumerate(_HOUR_BOUNDARY_ARRIVALS)
+    ]
+    clustered = _employee_clusters_df(*rows)
+    cluster_sampling = pd.Series({0: 5000}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sigma_minutes = clustered["work_arrival_time"].apply(tu.hhmm_to_minutes).std(ddof=0)
+    sigma_raw = clustered["work_arrival_time"].std(ddof=0)
+    # sanity check on the fixture itself: the encoding jump really does
+    # inflate the raw-HHMM std relative to the true minutes-space std.
+    assert sigma_raw > 3 * sigma_minutes
+
+    sampled = sm.sample_employees(clustered, cluster_sampling, jitter_scale=1.0, seed=0)
+    empirical_sd = sampled["work_arrival_time"].apply(tu.hhmm_to_minutes).std(ddof=0)
+
+    # Jitter was applied with scale=1.0 * sigma_minutes, so the resulting
+    # spread should track sigma_minutes closely and stay far below what a
+    # sigma_raw-scaled jitter would have produced.
+    assert empirical_sd < 2 * sigma_minutes
+    assert empirical_sd < sigma_raw / 2
+
+
+def test_sample_employees_time_jitter_clamps_before_midnight_to_0000():
+    rows = [
+        _employee_row(f"H{i}", cluster_id=0, work_arrival_time=1.0 + i) for i in range(10)
+    ]
+    clustered = _employee_clusters_df(*rows)
+    cluster_sampling = pd.Series({0: 2000}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sampled = sm.sample_employees(clustered, cluster_sampling, jitter_scale=50.0, seed=0)
+
+    assert (sampled["work_arrival_time"] >= 0.0).all()
+    assert (sampled["work_arrival_time"] == 0.0).any()
+
+
+def test_sample_employees_time_jitter_clamps_after_end_of_day_to_2359():
+    rows = [
+        _employee_row(f"H{i}", cluster_id=0, work_arrival_time=2350.0 + i) for i in range(10)
+    ]
+    clustered = _employee_clusters_df(*rows)
+    cluster_sampling = pd.Series({0: 2000}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sampled = sm.sample_employees(clustered, cluster_sampling, jitter_scale=50.0, seed=0)
+
+    assert (sampled["work_arrival_time"] <= 2359.0).all()
+    assert (sampled["work_arrival_time"] == 2359.0).any()
+
+
+def test_sample_employees_time_jitter_is_reproducible_with_same_seed():
+    rows = [
+        _employee_row(
+            f"H{i}", cluster_id=0, work_arrival_time=755.0 + i, work_departure_time=1650.0 + i
+        )
+        for i in range(10)
+    ]
+    clustered = _employee_clusters_df(*rows)
+    cluster_sampling = pd.Series({0: 500}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sampled_a = sm.sample_employees(clustered, cluster_sampling, seed=4)
+    sampled_b = sm.sample_employees(clustered, cluster_sampling, seed=4)
+
+    pd.testing.assert_frame_equal(sampled_a, sampled_b)
+
+
+def test_sample_employees_time_jitter_does_not_affect_other_features():
+    # Two populations identical except for work_arrival_time's absolute
+    # value (same relative spread/shape in both, just shifted by +1200
+    # HHMM units) - every other JITTER_FEATURES column, and which real rows
+    # get resampled, must come out bit-identical: the minutes-space jitter
+    # fix touches only TIME_OF_DAY_FEATURES's own values, not the rng
+    # consumption sequence that determines everything else.
+    def _rows(arrival_offset):
+        return [
+            _employee_row(
+                f"H{i}",
+                cluster_id=0,
+                work_arrival_time=arrival_offset + i,
+                commute_distance_survey_miles=5.0 + 0.3 * i,
+                total_daily_miles=20.0 + 0.5 * i,
+            )
+            for i in range(10)
+        ]
+
+    clustered_a = _employee_clusters_df(*_rows(755.0))
+    clustered_b = _employee_clusters_df(*_rows(1955.0))
+    cluster_sampling = pd.Series({0: 300}, name="n_synthetic")
+    cluster_sampling.index.name = "cluster_id"
+
+    sampled_a = sm.sample_employees(clustered_a, cluster_sampling, seed=9)
+    sampled_b = sm.sample_employees(clustered_b, cluster_sampling, seed=9)
+
+    assert (sampled_a["HOUSEID"] == sampled_b["HOUSEID"]).all()
+    for column in (
+        "commute_distance_survey_miles",
+        "total_daily_miles",
+        "trips_per_day",
+        "number_of_stops",
+    ):
+        pd.testing.assert_series_equal(sampled_a[column], sampled_b[column], check_names=False)
 
 
 # --- assign_unique_employee_ids -----------------------------------------------

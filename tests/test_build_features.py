@@ -166,6 +166,47 @@ def test_build_commute_features_zero_work_trips_is_a_real_value_not_nan():
     assert pd.isna(result.loc[0, "work_arrival_time"])
 
 
+def test_build_commute_features_filters_implausible_commute_distance_to_nan():
+    trips = _trips_df(_trip(GCDWORK=bf.MAX_PLAUSIBLE_COMMUTE_MILES + 1))
+
+    result = bf.build_commute_features(trips)
+
+    assert pd.isna(result.loc[0, "commute_distance_survey_miles"])
+
+
+def test_build_commute_features_keeps_commute_distance_at_the_bound():
+    trips = _trips_df(_trip(GCDWORK=bf.MAX_PLAUSIBLE_COMMUTE_MILES))
+
+    result = bf.build_commute_features(trips)
+
+    assert result.loc[0, "commute_distance_survey_miles"] == bf.MAX_PLAUSIBLE_COMMUTE_MILES
+
+
+def test_build_commute_features_does_not_filter_plausible_commute_distance():
+    trips = _trips_df(_trip(GCDWORK=9.5))
+
+    result = bf.build_commute_features(trips)
+
+    assert result.loc[0, "commute_distance_survey_miles"] == 9.5
+
+
+def test_build_commute_features_implausible_commute_distance_does_not_affect_trip_miles():
+    trips = _trips_df(
+        _trip(
+            TRIPID="01",
+            WHYTRP1S=10,
+            TRPMILES=9.0,
+            TRVLCMIN=30.0,
+            GCDWORK=bf.MAX_PLAUSIBLE_COMMUTE_MILES + 1,
+        ),
+    )
+
+    result = bf.build_commute_features(trips)
+
+    assert pd.isna(result.loc[0, "commute_distance_survey_miles"])
+    assert result.loc[0, "commute_distance_trip_miles"] == 9.0
+
+
 # --- build_daily_mobility_features -------------------------------------------
 
 
@@ -205,6 +246,54 @@ def test_build_daily_mobility_features_nan_average_when_no_driving_trips():
 
     assert pd.isna(result.loc[0, "total_daily_miles"])
     assert pd.isna(result.loc[0, "average_trip_distance_miles"])
+
+
+def test_build_daily_mobility_features_filters_implausible_total_daily_miles_to_nan():
+    trips = _trips_df(
+        _trip(TRPTRANS=3, TRPMILES=bf.MAX_PLAUSIBLE_TOTAL_DAILY_MILES + 1, TRVLCMIN=600.0)
+    )
+
+    result = bf.build_daily_mobility_features(trips)
+
+    assert pd.isna(result.loc[0, "total_daily_miles"])
+
+
+def test_build_daily_mobility_features_filters_total_driving_minutes_and_average_in_lockstep():
+    """validation/missingness.py's co-occurrence invariant: total_daily_miles,
+    total_driving_minutes, and average_trip_distance_miles must be null
+    together, never a partial 1/3 or 2/3 pattern."""
+    trips = _trips_df(
+        _trip(TRPTRANS=3, TRPMILES=bf.MAX_PLAUSIBLE_TOTAL_DAILY_MILES + 1, TRVLCMIN=600.0)
+    )
+
+    result = bf.build_daily_mobility_features(trips)
+
+    assert pd.isna(result.loc[0, "total_daily_miles"])
+    assert pd.isna(result.loc[0, "total_driving_minutes"])
+    assert pd.isna(result.loc[0, "average_trip_distance_miles"])
+
+
+def test_build_daily_mobility_features_keeps_total_daily_miles_at_the_bound():
+    trips = _trips_df(
+        _trip(TRPTRANS=3, TRPMILES=bf.MAX_PLAUSIBLE_TOTAL_DAILY_MILES, TRVLCMIN=400.0)
+    )
+
+    result = bf.build_daily_mobility_features(trips)
+
+    assert result.loc[0, "total_daily_miles"] == bf.MAX_PLAUSIBLE_TOTAL_DAILY_MILES
+    assert result.loc[0, "total_driving_minutes"] == 400.0
+
+
+def test_build_daily_mobility_features_does_not_filter_plausible_total_daily_miles():
+    trips = _trips_df(
+        _trip(TRIPID="01", WHYTRP1S=10, TRPTRANS=3, TRPMILES=10.0, TRVLCMIN=20.0),
+        _trip(TRIPID="02", WHYTRP1S=30, TRPTRANS=3, TRPMILES=5.0, TRVLCMIN=10.0),
+    )
+
+    result = bf.build_daily_mobility_features(trips)
+
+    assert result.loc[0, "total_daily_miles"] == 15.0
+    assert result.loc[0, "total_driving_minutes"] == 30.0
 
 
 # --- build_vehicle_availability_features -------------------------------------

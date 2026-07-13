@@ -107,6 +107,13 @@ def _employee_row(
     commute_distance_survey_miles: float = 10.0,
     total_driving_minutes: float = 60.0,
     commute_duration_minutes: float = 30.0,
+    # Defaults preserve pre-existing test behavior: a NaN trip-miles value
+    # always falls through to commute_distance_survey_miles regardless of
+    # work_trip_count (select_commute_anchor_miles), so every test written
+    # before this anchor existed keeps its original expected result unless
+    # it explicitly overrides these two.
+    commute_distance_trip_miles: float = float("nan"),
+    work_trip_count: int = 1,
 ) -> dict:
     return {
         "synthetic_employee_id": synthetic_employee_id,
@@ -119,6 +126,8 @@ def _employee_row(
         "commute_distance_survey_miles": commute_distance_survey_miles,
         "total_driving_minutes": total_driving_minutes,
         "commute_duration_minutes": commute_duration_minutes,
+        "commute_distance_trip_miles": commute_distance_trip_miles,
+        "work_trip_count": work_trip_count,
     }
 
 
@@ -629,6 +638,112 @@ def test_rescale_chain_distances_uses_zero_commute_distance_as_a_real_anchor():
 
     work_leg = rescaled.loc[rescaled["trip_purpose"] == ac.TRIP_PURPOSE_WORK].iloc[0]
     assert work_leg["distance"] == 0.0
+
+
+# --- select_commute_anchor_miles ---------------------------------------------------
+
+
+def test_select_commute_anchor_miles_uses_trip_miles_for_single_work_trip():
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=15.0, work_trip_count=1,
+        )
+    )
+
+    assert ac.select_commute_anchor_miles(employee) == 15.0
+
+
+def test_select_commute_anchor_miles_falls_back_when_multiple_work_trips():
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=15.0, work_trip_count=2,
+        )
+    )
+
+    assert ac.select_commute_anchor_miles(employee) == 10.0
+
+
+def test_select_commute_anchor_miles_falls_back_above_plausibility_bound():
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=ac.MAX_PLAUSIBLE_LEG_MILES + 1.0, work_trip_count=1,
+        )
+    )
+
+    assert ac.select_commute_anchor_miles(employee) == 10.0
+
+
+def test_select_commute_anchor_miles_keeps_trip_miles_at_the_bound():
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=ac.MAX_PLAUSIBLE_LEG_MILES, work_trip_count=1,
+        )
+    )
+
+    assert ac.select_commute_anchor_miles(employee) == ac.MAX_PLAUSIBLE_LEG_MILES
+
+
+def test_select_commute_anchor_miles_falls_back_when_trip_miles_null():
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=float("nan"), work_trip_count=1,
+        )
+    )
+
+    assert ac.select_commute_anchor_miles(employee) == 10.0
+
+
+def test_generate_chain_for_employee_uses_trip_miles_anchor_end_to_end():
+    # Confirms the computed anchor actually reaches rescale_chain_distances,
+    # not just that select_commute_anchor_miles returns the right value in
+    # isolation.
+    trips, clusters = _sample_trips_and_clusters()
+    donor_legs = ac.build_donor_legs(trips, clusters)
+    donor_summary = ac.summarize_donor_chains(donor_legs)
+    donor_legs_by_person = {k: g for k, g in donor_legs.groupby(ac.PERSON_KEY)}
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            total_daily_miles=30.0, commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=15.0, work_trip_count=1,
+        )
+    )
+    rng = np.random.default_rng(0)
+
+    chain = ac.generate_chain_for_employee(employee, donor_summary, donor_legs_by_person, rng)
+
+    work_leg = chain.loc[chain["trip_purpose"] == ac.TRIP_PURPOSE_WORK].iloc[0]
+    assert work_leg["distance"] == pytest.approx(15.0)
+
+
+def test_generate_chain_for_employee_falls_back_to_survey_miles_end_to_end():
+    trips, clusters = _sample_trips_and_clusters()
+    donor_legs = ac.build_donor_legs(trips, clusters)
+    donor_summary = ac.summarize_donor_chains(donor_legs)
+    donor_legs_by_person = {k: g for k, g in donor_legs.groupby(ac.PERSON_KEY)}
+    employee = pd.Series(
+        _employee_row(
+            "SYN-1", cluster_id=0, trips_per_day=2, number_of_stops=1,
+            total_daily_miles=30.0, commute_distance_survey_miles=10.0,
+            commute_distance_trip_miles=15.0, work_trip_count=2,
+        )
+    )
+    rng = np.random.default_rng(0)
+
+    chain = ac.generate_chain_for_employee(employee, donor_summary, donor_legs_by_person, rng)
+
+    work_leg = chain.loc[chain["trip_purpose"] == ac.TRIP_PURPOSE_WORK].iloc[0]
+    assert work_leg["distance"] == pytest.approx(10.0)
 
 
 # --- build_fallback_chain ---------------------------------------------------------

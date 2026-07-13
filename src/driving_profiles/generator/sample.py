@@ -52,6 +52,7 @@ import numpy as np
 import pandas as pd
 
 from driving_profiles.features.cluster import CONTINUOUS_FEATURES, PERSON_KEY
+from driving_profiles.generator.time_utils import MINUTES_PER_DAY, hhmm_to_minutes, minutes_to_hhmm
 from driving_profiles.utils import random_seed
 
 logger = logging.getLogger(__name__)
@@ -78,8 +79,19 @@ JITTER_FEATURES = list(CONTINUOUS_FEATURES)
 # respondent it was resampled from.
 JITTER_SCALE = 0.15
 
-# HHMM-coded time-of-day columns: clamped to the valid clock range after
-# jitter, never rounded to integer.
+# HHMM-coded time-of-day columns: jittered in true minutes-since-midnight
+# space (converted via hhmm_to_minutes, perturbed, clamped to
+# [0, MINUTES_PER_DAY - 1], converted back via minutes_to_hhmm), never
+# rounded to integer. Jittering the raw HHMM number directly (e.g.
+# 830 + noise) was this project's original approach and is exactly wrong:
+# a clock's minute digit rolls over at 60, not 100, so raw-HHMM noise
+# routinely produces an invalid minute component (e.g. 880 = "8:80") and,
+# more importantly, a systematic later-time bias (a negative HHMM offset
+# crossing the encoding's 100-boundary is decoded ~40 minutes later than a
+# true clock rollback would be - see docs/activity_validation_investigation.md
+# for the measured effect). Converting to minutes first makes the jitter's
+# additive noise genuinely additive in elapsed time, eliminating both
+# problems.
 TIME_OF_DAY_FEATURES = ["work_arrival_time", "work_departure_time"]
 
 # Integer count columns: rounded after jitter and clamped to their observed
@@ -187,9 +199,24 @@ def sample_employees(
     `jitter_scale` times that cluster's own within-cluster standard
     deviation; a `NaN` source value (e.g. an unobserved
     `total_daily_miles`) is left as `NaN` rather than jittered.
+
+    `TIME_OF_DAY_FEATURES` are the one exception to "jitter the column's own
+    value directly": they're converted to minutes-since-midnight first
+    (`hhmm_to_minutes`), jittered there with sigma from the *minutes-space*
+    within-cluster standard deviation, clamped to
+    `[0, MINUTES_PER_DAY - 1]`, then converted back (`minutes_to_hhmm`) -
+    see `TIME_OF_DAY_FEATURES`'s module-level comment for why jittering the
+    raw HHMM number directly is wrong.
     """
     rng = random_seed.get_rng(seed)
     cluster_std = clustered_employees.groupby("cluster_id")[JITTER_FEATURES].std(ddof=0)
+
+    time_of_day_minutes = clustered_employees[TIME_OF_DAY_FEATURES].apply(
+        lambda column: column.apply(hhmm_to_minutes)
+    )
+    cluster_std_minutes = time_of_day_minutes.groupby(clustered_employees["cluster_id"]).std(
+        ddof=0
+    )
 
     sampled_parts = []
     for cluster_id, n_draw in cluster_sampling.items():
@@ -201,17 +228,30 @@ def sample_employees(
 
         draw_idx = rng.integers(0, len(pool), size=int(n_draw))
         draw = pool.iloc[draw_idx].reset_index(drop=True)
+        draw_minutes = time_of_day_minutes.loc[pool.index].iloc[draw_idx].reset_index(drop=True)
 
         sigma = cluster_std.loc[cluster_id]
+        sigma_minutes = cluster_std_minutes.loc[cluster_id]
         for column in JITTER_FEATURES:
-            col_sigma = sigma[column]
-            if not np.isfinite(col_sigma) or col_sigma == 0:
-                continue
-            values = draw[column].to_numpy(dtype=float).copy()
-            not_na = ~np.isnan(values)
-            noise = rng.normal(loc=0.0, scale=jitter_scale * col_sigma, size=len(draw))
-            values[not_na] = values[not_na] + noise[not_na]
-            draw[column] = values
+            if column in TIME_OF_DAY_FEATURES:
+                col_sigma = sigma_minutes[column]
+                if not np.isfinite(col_sigma) or col_sigma == 0:
+                    continue
+                values = draw_minutes[column].to_numpy(dtype=float).copy()
+                not_na = ~np.isnan(values)
+                noise = rng.normal(loc=0.0, scale=jitter_scale * col_sigma, size=len(draw))
+                values[not_na] = values[not_na] + noise[not_na]
+                values = np.clip(values, 0, MINUTES_PER_DAY - 1)
+                draw[column] = pd.Series(values, index=draw.index).apply(minutes_to_hhmm)
+            else:
+                col_sigma = sigma[column]
+                if not np.isfinite(col_sigma) or col_sigma == 0:
+                    continue
+                values = draw[column].to_numpy(dtype=float).copy()
+                not_na = ~np.isnan(values)
+                noise = rng.normal(loc=0.0, scale=jitter_scale * col_sigma, size=len(draw))
+                values[not_na] = values[not_na] + noise[not_na]
+                draw[column] = values
 
         for column in COUNT_FEATURES:
             draw[column] = draw[column].round().clip(lower=1).astype(
@@ -219,8 +259,9 @@ def sample_employees(
             )
         for column in NON_NEGATIVE_FEATURES:
             draw[column] = draw[column].clip(lower=0)
-        for column in TIME_OF_DAY_FEATURES:
-            draw[column] = draw[column].clip(lower=0, upper=2359)
+        # TIME_OF_DAY_FEATURES already produced a valid HHMM value via
+        # minutes_to_hhmm's own [0, MINUTES_PER_DAY - 1] clamp above - no
+        # separate raw-HHMM clip(0, 2359) needed anymore.
 
         sampled_parts.append(draw)
 

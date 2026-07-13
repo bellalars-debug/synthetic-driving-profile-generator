@@ -21,6 +21,15 @@ HHVEHCNT, DRVRCNT) stay whatever dtype `ingest.py`'s `pd.read_csv` inferred
 below is written to work identically whether the column ended up int64 or
 float64 (e.g. `df["WHYTRP1S"] == 10` matches both `10` and `10.0`), so this
 mixed-dtype reality does not need to be normalized before use.
+
+`commute_distance_survey_miles` and `total_daily_miles` are filtered to NaN
+above a plausibility bound (`MAX_PLAUSIBLE_COMMUTE_MILES`/
+`MAX_PLAUSIBLE_TOTAL_DAILY_MILES` below) before being handed downstream -
+both are later used as `generator/sample.py` jitter inputs and
+`generator/activity.py` rescale *targets*, and a handful of raw NHTS values
+for these two fields are implausible for this project's "local
+daily/commute driving" scope (docs/activity_validation_investigation.md §5
+item 1).
 """
 
 from __future__ import annotations
@@ -86,6 +95,61 @@ HOUSEHOLD_VEHICLE_TRPHHVEH_CODE = 1
 
 AGE_BAND_BINS = [-np.inf, 24, 34, 44, 54, 64, np.inf]
 AGE_BAND_LABELS = ["<25", "25-34", "35-44", "45-54", "55-64", "65+"]
+
+# --- Plausibility bounds (docs/activity_validation_investigation.md §5 item 1) -
+#
+# `commute_distance_survey_miles` (GCDWORK) and `total_daily_miles` (summed
+# TRPMILES) are raw NHTS values with no upstream plausibility cap. A handful
+# of respondents carry a value that isn't a representative "local
+# daily/commute driving" day - this project's stated scope (see clean.py's
+# module docstring: the NHTS long-distance-trip file, which captures 50+
+# mile one-way trips as its own survey instrument, is deliberately not
+# loaded). Left uncapped, these two fields become jitter/resample inputs in
+# generator/sample.py and then *rescale targets* in
+# generator/activity.py's rescale_chain_distances, which anchors a leg to
+# them directly - so an extreme value here turns into an extreme (but
+# individually "plausible-speed") leg in the synthetic activity chains
+# (docs/activity_validation_investigation.md §2-4 traces this end to end).
+#
+# Both bounds were chosen from two converging signals: a natural gap in the
+# empirical tail (a dense cluster of legitimate high-end values, then a
+# sparse, much larger tail with no values in between - the signature of a
+# handful of implausible-for-this-scope records rather than a smooth
+# distribution), and an independent physical/behavioral justification.
+# Values above the bound are filtered to NaN (this project's existing
+# convention for "not applicable" - see build_commute_features'/
+# build_daily_mobility_features' own docstrings - not clipped, since
+# clipping would pile many different respondents up at one artificial value
+# and manufacture a new distributional artifact).
+
+# MAX_PLAUSIBLE_COMMUTE_MILES deliberately reuses the same number as
+# generator/activity.py's MAX_PLAUSIBLE_LEG_MILES (150.0) rather than
+# inventing an independent one: that constant already draws this project's
+# line for "usable in a local-commute template" for donor legs, and
+# commute_distance_survey_miles is the same kind of quantity (a single
+# one-way trip distance) - using the same standard for a usable *target*
+# value that's already used for a usable *donor* value is what
+# docs/activity_validation_investigation.md §5 item 1 recommends. It also
+# independently lands in this field's own empirical gap: the clustered
+# population's commute_distance_survey_miles values cluster up to ~157mi,
+# then jump to 396mi+ with nothing in between.
+MAX_PLAUSIBLE_COMMUTE_MILES = 150.0
+
+# MAX_PLAUSIBLE_TOTAL_DAILY_MILES has no existing project constant to mirror
+# - total_daily_miles sums potentially several driving legs in a day, so a
+# single-leg cap would be too strict for a legitimate multi-stop high-mileage
+# day. It is instead grounded in:
+#  1. Empirical: the clustered population's total_daily_miles values cluster
+#     up to ~357mi, then jump to 456mi+ with nothing in between - the same
+#     "clean gap" signature as the commute bound above.
+#  2. Physical: FMCSA hours-of-service rules cap a single day's driving at
+#     11 hours; covering 400 miles in that time requires only a ~36mph
+#     blended (city+highway) average, a conservative, easily achievable
+#     speed - so 400mi/day is a generous but physically groundable ceiling
+#     for "local daily driving" as opposed to a long-distance trip, and it
+#     sits comfortably above even the long-commute archetype's own observed
+#     mean+3sd (cluster_1: mean=73.75, sd=87.65 -> mean+3sd=336.7).
+MAX_PLAUSIBLE_TOTAL_DAILY_MILES = 400.0
 
 
 def _one_row_per_person(trips: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -164,9 +228,15 @@ def build_commute_features(trips: pd.DataFrame) -> pd.DataFrame:
     - `work_trip_count`: number of WHYTRP1S=10 legs for the person that day
       (usually 0 or 1; 0 is a real, known value - "didn't go to work" - not
       a missing value, so it is filled rather than left NaN).
-    - `commute_distance_survey_miles`: `GCDWORK` pass-through.
+    - `commute_distance_survey_miles`: `GCDWORK` pass-through, filtered to
+      NaN above `MAX_PLAUSIBLE_COMMUTE_MILES` (see that constant's
+      docstring) - a small number of respondents report a one-way survey
+      commute distance that isn't a plausible "local daily/commute driving"
+      value for this project's scope.
     - `commute_distance_trip_miles`: sum of `TRPMILES` over work-purpose
-      legs; NaN if the person has none.
+      legs; NaN if the person has none. Not filtered the same way - it's an
+      independent trip-based cross-check against GCDWORK (see module
+      docstring), not itself used as a downstream rescale target.
     - `commute_duration_minutes`: sum of `TRVLCMIN` over work-purpose legs.
     - `work_arrival_time`: `ENDTIME` (HHMM, e.g. 830.0 = 8:30am) of the
       earliest work-purpose leg.
@@ -190,6 +260,16 @@ def build_commute_features(trips: pd.DataFrame) -> pd.DataFrame:
     commute_distance_survey = (
         ordered.groupby(PERSON_KEY)["GCDWORK"].first().rename("commute_distance_survey_miles")
     )
+    is_extreme_commute = commute_distance_survey > MAX_PLAUSIBLE_COMMUTE_MILES
+    n_extreme_commute = int(is_extreme_commute.sum())
+    if n_extreme_commute:
+        logger.info(
+            "build_commute_features: filtering %d commute_distance_survey_miles value(s) "
+            "exceeding the %.0f-mile local-commute plausibility bound to NaN",
+            n_extreme_commute,
+            MAX_PLAUSIBLE_COMMUTE_MILES,
+        )
+    commute_distance_survey = commute_distance_survey.where(~is_extreme_commute)
     commute_distance_trip = (
         work_legs.groupby(PERSON_KEY)["TRPMILES"].sum(min_count=1).rename("commute_distance_trip_miles")
     )
@@ -241,7 +321,17 @@ def build_daily_mobility_features(trips: pd.DataFrame) -> pd.DataFrame:
     - `total_daily_miles`/`total_driving_minutes`: `TRPMILES`/`TRVLCMIN`
       summed over non-loop trips in a driving mode
       (`DRIVING_MODE_TRPTRANS_CODES`). NaN if the person took no driving
-      trips that day (distinct from 0 miles driven).
+      trips that day (distinct from 0 miles driven). Also NaN when
+      `total_daily_miles` exceeds `MAX_PLAUSIBLE_TOTAL_DAILY_MILES` (see
+      that constant's docstring) - a small number of respondents' summed
+      driving distance isn't a plausible "local daily driving" value for
+      this project's scope. `total_driving_minutes` and
+      `average_trip_distance_miles` are filtered in lockstep with
+      `total_daily_miles` (not independently re-checked) so all three keep
+      the 100%-co-occurring-null pattern `validation/missingness.py` already
+      relies on - a partial-null row here would look like a new pipeline
+      inconsistency rather than the deliberate "not a plausible local day"
+      exclusion it actually is.
     - `average_trip_distance_miles`: `total_daily_miles` divided by the
       count of driving trips (not `trips_per_day`, which includes
       walk/bike/transit legs with near-zero distance that would understate
@@ -281,6 +371,23 @@ def build_daily_mobility_features(trips: pd.DataFrame) -> pd.DataFrame:
     result["average_trip_distance_miles"] = (
         result["total_daily_miles"] / result["_driving_trip_count"]
     )
+
+    is_extreme_total = result["total_daily_miles"] > MAX_PLAUSIBLE_TOTAL_DAILY_MILES
+    n_extreme_total = int(is_extreme_total.sum())
+    if n_extreme_total:
+        logger.info(
+            "build_daily_mobility_features: filtering %d total_daily_miles value(s) "
+            "exceeding the %.0f-mile local-driving plausibility bound to NaN (along with "
+            "total_driving_minutes/average_trip_distance_miles, to keep all three "
+            "co-occurring null per validation/missingness.py's invariant)",
+            n_extreme_total,
+            MAX_PLAUSIBLE_TOTAL_DAILY_MILES,
+        )
+    result.loc[
+        is_extreme_total,
+        ["total_daily_miles", "total_driving_minutes", "average_trip_distance_miles"],
+    ] = np.nan
+
     return result.drop(columns=["_driving_trip_count"]).reset_index()
 
 

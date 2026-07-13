@@ -60,6 +60,10 @@ def _employee_row(
     work_arrival_time=830.0, work_departure_time=1700.0, total_daily_miles=20.0,
     commute_distance_survey_miles=10.0, total_driving_minutes=60.0,
     commute_duration_minutes=30.0,
+    # NaN trip-miles always falls through to commute_distance_survey_miles
+    # (select_commute_anchor_miles), so these defaults preserve every
+    # pre-existing test's expected result.
+    commute_distance_trip_miles=float("nan"), work_trip_count=1,
 ):
     return {
         "synthetic_employee_id": synthetic_employee_id,
@@ -72,6 +76,8 @@ def _employee_row(
         "commute_distance_survey_miles": commute_distance_survey_miles,
         "total_driving_minutes": total_driving_minutes,
         "commute_duration_minutes": commute_duration_minutes,
+        "commute_distance_trip_miles": commute_distance_trip_miles,
+        "work_trip_count": work_trip_count,
     }
 
 
