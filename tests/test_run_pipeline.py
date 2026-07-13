@@ -52,7 +52,12 @@ def test_skip_existing_false_when_missing(tmp_path):
 # --- _export_excel_implemented -------------------------------------------------
 
 
-def test_export_excel_not_implemented_by_default():
+def test_export_excel_implemented_by_default():
+    assert run_pipeline._export_excel_implemented() is True
+
+
+def test_export_excel_not_detected_when_entry_point_missing(monkeypatch):
+    monkeypatch.delattr(run_pipeline.export_excel, "export_all", raising=False)
     assert run_pipeline._export_excel_implemented() is False
 
 

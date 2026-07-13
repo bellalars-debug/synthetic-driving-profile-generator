@@ -31,10 +31,10 @@ REQUIRED_RAW_FILES = tuple(sorted(download.REQUIRED_CSV_FILENAMES))
 
 DEFAULT_REPORTS_DIR = Path("reports/xlsx")
 
-# export_excel.py is a stub today (see its module docstring). Once
-# implemented, it should expose a callable named `export_all(...)` as its
-# pipeline entry point; until then this stage is skipped and not counted
-# toward the total stage count.
+# export_excel.py exposes a callable named `export_all(...)` as its pipeline
+# entry point (see its module docstring); detected via hasattr rather than
+# hard-wired so a caller that stubs it back out in a test still gets a
+# correctly-numbered, export-skipping pipeline run.
 EXPORT_EXCEL_ENTRY_POINT = "export_all"
 
 
