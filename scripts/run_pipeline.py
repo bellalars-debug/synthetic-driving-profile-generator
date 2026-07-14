@@ -1,13 +1,14 @@
 """Thin CLI orchestrating the full pipeline:
 
 download -> ingest -> clean -> features -> cluster -> sample ->
-generate activity profiles -> (optional) export .xlsx reports.
+generate activity profiles -> EV charging demand -> (optional) export
+.xlsx reports.
 
 Each stage calls straight into the already-implemented module functions
 (`driving_profiles.data.*`, `driving_profiles.features.*`,
-`driving_profiles.generator.*`) - no scientific/statistical logic lives
-here, only sequencing, logging, existing-output checks, and error
-reporting.
+`driving_profiles.generator.*`, `driving_profiles.scenarios.*`) - no
+scientific/statistical logic lives here, only sequencing, logging,
+existing-output checks, and error reporting.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from driving_profiles.data import clean, download, ingest  # noqa: E402
 from driving_profiles.features import build_features, cluster  # noqa: E402
 from driving_profiles.generator import activity  # noqa: E402
 from driving_profiles.generator import sample as sample_module  # noqa: E402
+from driving_profiles.scenarios import charging_demand  # noqa: E402
 from driving_profiles.utils import export_excel  # noqa: E402
 
 # Same four files download.py's REQUIRED_CSV_FILENAMES guarantees fetch()
@@ -162,6 +164,46 @@ def stage_activity(interim_dir: Path, processed_dir: Path, seed: int | None, for
     )
 
 
+def stage_charging_demand(
+    processed_dir: Path,
+    ev_adoption_rate: float | None,
+    charger_power_kw: float | None,
+    vehicle_efficiency_kwh_per_mile: float | None,
+    charging_efficiency: float | None,
+    seed: int | None,
+    force: bool,
+) -> None:
+    sessions_path = processed_dir / charging_demand.SESSIONS_FILENAME
+    load_profile_path = processed_dir / charging_demand.LOAD_PROFILE_FILENAME
+    summary_path = processed_dir / charging_demand.SUMMARY_FILENAME
+    outputs = (sessions_path, load_profile_path, summary_path)
+
+    if not force and all(p.exists() for p in outputs):
+        print(
+            f"  Outputs already exist in {processed_dir} - skipping "
+            "(use --force to regenerate)."
+        )
+        return
+
+    overrides = {}
+    if ev_adoption_rate is not None:
+        overrides["ev_adoption_rate"] = ev_adoption_rate
+    if charger_power_kw is not None:
+        overrides["charger_power_kw"] = charger_power_kw
+    if vehicle_efficiency_kwh_per_mile is not None:
+        overrides["vehicle_efficiency_kwh_per_mile"] = vehicle_efficiency_kwh_per_mile
+    if charging_efficiency is not None:
+        overrides["charging_efficiency"] = charging_efficiency
+    config = charging_demand.ChargingScenarioConfig(random_seed=seed, **overrides)
+
+    sessions, load_profile, summary = charging_demand.run_charging_scenario(processed_dir, config)
+    charging_demand.save_charging_outputs(sessions, load_profile, summary, processed_dir)
+    print(
+        f"  Wrote {len(sessions)} charging session row(s) and "
+        f"{len(load_profile)} load-profile interval(s) to {processed_dir}"
+    )
+
+
 def stage_export_excel(
     interim_dir: Path, processed_dir: Path, reports_dir: Path, force: bool
 ) -> None:
@@ -210,6 +252,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Recompute and overwrite every stage's output, even if it already exists.",
     )
+    parser.add_argument(
+        "--ev-adoption-rate",
+        type=float,
+        default=None,
+        help="EV adoption rate for the charging-demand stage "
+        f"(default: {charging_demand.ChargingScenarioConfig().ev_adoption_rate}).",
+    )
+    parser.add_argument(
+        "--charger-power-kw",
+        type=float,
+        default=None,
+        help="Charger power in kW for the charging-demand stage "
+        f"(default: {charging_demand.ChargingScenarioConfig().charger_power_kw}).",
+    )
+    parser.add_argument(
+        "--vehicle-efficiency-kwh-per-mile",
+        type=float,
+        default=None,
+        help="Vehicle efficiency (kWh/mile) for the charging-demand stage "
+        f"(default: {charging_demand.ChargingScenarioConfig().vehicle_efficiency_kwh_per_mile}).",
+    )
+    parser.add_argument(
+        "--charging-efficiency",
+        type=float,
+        default=None,
+        help="AC-to-battery charging efficiency for the charging-demand stage "
+        f"(default: {charging_demand.ChargingScenarioConfig().charging_efficiency}).",
+    )
     return parser.parse_args(argv)
 
 
@@ -222,7 +292,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args(argv)
 
-    total = 8 if _export_excel_implemented() else 7
+    total = 9 if _export_excel_implemented() else 8
 
     _run_stage(1, total, "Downloading data...", stage_download, args.raw_dir, args.force)
     _run_stage(2, total, "Ingesting raw NHTS files...", stage_ingest, args.raw_dir)
@@ -261,9 +331,22 @@ def main(argv: list[str] | None = None) -> None:
         args.seed,
         args.force,
     )
-    if total == 8:
+    _run_stage(
+        8,
+        total,
+        "Estimating EV charging demand...",
+        stage_charging_demand,
+        args.processed_dir,
+        args.ev_adoption_rate,
+        args.charger_power_kw,
+        args.vehicle_efficiency_kwh_per_mile,
+        args.charging_efficiency,
+        args.seed,
+        args.force,
+    )
+    if total == 9:
         _run_stage(
-            8,
+            9,
             total,
             "Exporting .xlsx reports...",
             stage_export_excel,
