@@ -32,3 +32,6 @@ reports/xlsx/**/*.xlsx
 # External validation datasets
 data/external/*
 !data/external/README.md
+
+# Generated validation outputs
+data/validation/
