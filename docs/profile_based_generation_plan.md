@@ -314,3 +314,261 @@ cross-check without any adapter code.
   generator's stop/dwell modeling choices; this is a structural-compatibility test, not new
   independent validation evidence (per §6 of `nhts_datasetanalysis_assessment.md`, nothing in this
   external repo is a second, independent NHTS sample).
+
+---
+
+## 8. Refined reconciliation policy (design only — supersedes §6–§7's adapter sketch)
+
+**Status:** design/specification only. Nothing in this section has been implemented; no code has
+been written or run against `data/external/nhts_datasetanalysis` or the production pipeline. This
+section refines Option D's "adapter logic" (§6) and "roadmap" (§7) into an exact, position-aware
+algorithm, per an explicit request to design the reconciliation before writing it. §6/§7's core
+conclusion is unchanged (distance/duration must come from this pipeline's own validated donor-leg
+data, never from `DriverProfiles.csv`'s `Distance (mi)` column); this section replaces their
+coarser "match on purpose + time-of-day band" sketch wherever the two disagree.
+
+**Goal:** implement the external driving activity profiles — not benchmark them, not replace them
+with an NHTS donor schedule. `DriverProfiles.csv` contains complete, well-formed activity schedules
+(§1–§2: every one of the 250 profiles is chronologically valid, 0→24h, no gaps). The one confirmed
+defect (§3) is that `Distance (mi)` and each leg's implied duration are two independently sampled
+values with no joint physical constraint, producing impossible speeds on 46% of users. The
+reconciliation therefore repairs only the two physically-inconsistent fields per driving leg and
+otherwise preserves the external schedule exactly — it must be possible to point at any output leg
+and show its sequence, purpose, and (whenever feasible) its clock times came from
+`DriverProfiles.csv`, and only its distance/duration came from this pipeline's donor pool.
+
+### 8.1 Preservation contract
+
+Each item the external profile must keep, and what in `DriverProfiles.csv` it maps to:
+
+| # | Item | Source field(s) | How it is preserved |
+|---|---|---|---|
+| 1 | Ordered `State` sequence (`Parked`/`Driving`/`Charging`) | `State` | Copied verbatim, in order. Never reordered, merged, split, inserted, or dropped. |
+| 2 | All destination/location categories | `Location` (`Home`, `Work`, `Other`, `Restaurant`, `Medical`, `Shopping/Errands`, `Gym`, `Daycare`, `School`; `-1` for `Driving` rows) | Copied verbatim, in order. Never reclassified or reordered. Collapsed to `home`/`work`/`other` only as an internal matching key (§8.3), never in the output sequence. |
+| 3 | Number of driving legs | count of `State == "Driving"` rows per `User ID` | Fixed at the external count. The reconciliation only ever changes a leg's distance/duration/clock-times — it never adds, removes, or splits a leg. |
+| 4 | Number and ordering of stops | non-`Home`/non-`Work` `Location` values and their position | Unchanged — stops are never reordered, added, or dropped. |
+| 5 | Direct vs. chained commute structure | leg count of the pre-first-`Work` chain and the post-last-`Work` chain (§8.3) | The leg count of each chain is fixed at the external value; "direct" (1 leg) and "chained" (>1 leg) are structural facts about the external profile, not modeled or altered. |
+| 6 | Midday activity structure | any `Work → ... → Work` sub-chain (departs `Work`, later returns to `Work`, before the day's final `Work` departure) | Leg count and destination sequence of every midday sub-chain unchanged. Confirmed present in 9/250 profiles (`Work` appears exactly twice; never more than twice in this file). |
+| 7 | Parked-window start/end times | `Start time (hour)` / `End time (hour)` on `Parked`/`Charging` rows | Preserved exactly unless a chronology reconciliation (§8.6) must adjust one side of a window to absorb a duration change — and even then, only the non-anchored side of the *immediately adjacent* window moves (§8.6). |
+| 8 | Workplace arrival/departure times | `End time (hour)` of the `Parked`/`Charging` row where `Location == "Work"` begins (arrival); its `Start time (hour)` (departure) | Explicitly the two clock times the anchor rule (§8.6) protects first — adjustments are steered away from these whenever any other placement of the residual is possible. |
+| 9 | Overall 0–24h daily schedule | full per-`User ID` timeline | Stays contiguous (no gaps/overlaps) and spans the full day by construction — §8.6 only ever changes an existing segment's duration, never removes, inserts, or reorders segments. |
+
+### 8.2 What is discarded, and why only two fields
+
+Per driving leg, only `Distance (mi)` and the implied duration (`End time (hour) − Start time
+(hour)`, in the `Driving` row) are discarded and replaced — never partially kept or blended. §3
+established that the independent-sampling defect is architectural, applying uniformly across
+direct and chained legs alike (30.2 mph median / 12.7% >100 mph on direct 2-leg commutes vs. 24.3
+mph median / 13.3% >100 mph on chained legs — materially the same rate). There is no reliable
+per-leg signal to decide "this particular leg's numbers happen to be physically fine, keep them" —
+so every driving leg's distance and duration are substituted, unconditionally, rather than
+conditionally filtered by an implied-speed check on the *external* value (which would silently keep
+some external legs and not others, undermining the "prove the reconstruction is uniform" goal).
+
+### 8.3 Leg annotation — deriving position/role, shared by both sides
+
+Before matching, every driving leg — on **both** the external profile and this pipeline's donor
+pool — is tagged with the same four attributes, computed by the same rule applied to each side's
+own leg sequence. This symmetry (one annotation rule, two inputs) is what makes "leg position" and
+"direct vs. chained structure" usable as matching keys at all.
+
+**Step 1 — locate workplace anchors.** Within one person's chronologically ordered legs, find every
+leg whose destination purpose is `work` (external: `Location == "Work"` on the following `Parked`/
+`Charging` row; donor: `trip_purpose == "work"`, i.e. `build_donor_legs`'s existing
+`classify_trip_purpose` collapse of `WHYTRP1S`). Call these **work-occurrence legs**, in order:
+`w_1 ... w_k` (`k ≥ 1` — confirmed 250/250 external profiles have at least one, at most two, `Work`
+occurrence; the donor pool must be similarly checked but is expected to satisfy this since
+`summarize_donor_chains` already requires `has_work_leg`).
+
+**Step 2 — assign `chain_segment`.** Every leg falls into exactly one of:
+- `commute_out` — every leg from the start of the day up to and including `w_1`.
+- `midday_i` — every leg strictly between `w_i` and `w_{i+1}`, for each consecutive pair of
+  work-occurrence legs (only possible for `i < k`; only observed for `k = 2` in this file, i.e. at
+  most one midday segment per profile, but the rule generalizes to any `k`).
+- `commute_return` — every leg after `w_k` to the end of the day.
+
+**Step 3 — assign `leg_index_in_segment` / `chain_type`.** Within a `chain_segment`, legs are
+numbered 1..`n` in chronological order; `chain_type = "direct"` when `n == 1`, else `"chained"`.
+This is exactly item 5/6 of the preservation contract, expressed as a matching key rather than
+prose.
+
+**Step 4 — assign `purpose_transition`.** For each leg, `(origin_purpose, destination_purpose)`,
+each collapsed to `{home, work, other}` (external: `Location` collapsed the same way `Sources.csv`'s
+own `WHYTRP1S`-derived categories already are — `Home→home`, `Work→work`, everything else→`other`;
+donor: the existing `trip_purpose` column). `origin_purpose` is the previous leg's
+`destination_purpose`, or `home` for the first leg of the day (every profile and every valid donor
+chain starts at `Home`, confirmed for the external file in §1/§2 and already assumed by
+`rescale_chain_times`'s own arrival-leg logic for donors).
+
+**Step 5 — `is_arrival_at_work` flag.** `destination_purpose == "work"` — true exactly for `w_1
+... w_k` themselves. Used only to pick the anchor direction (§8.6), not as a matching key (it's
+already implied by `purpose_transition`).
+
+### 8.4 Donor pool and tiered matching
+
+**Pool.** Reuse `build_donor_legs(trips_clean, employee_clusters)` unchanged — same chronological-
+validity filter, same `MAX_PLAUSIBLE_LEG_MILES` cap — since that is "the existing validated donor
+machinery" the policy is required to reuse, not a new dataset. From its output, keep only legs with
+`is_driving_leg == True` (a leg-level restriction, tighter than `select_donor`'s whole-donor
+`has_driving_leg`, since this reconciliation borrows single legs, not whole chains — a donor whose
+day otherwise had no driving-mode trips is irrelevant here, but so is a *non-driving* leg belonging
+to a donor who drove elsewhere that day). Additionally restrict to legs whose own implied speed
+(`TRPMILES / (TRVLCMIN / 60)`) falls in `[MIN_PLAUSIBLE_SPEED_MPH, MAX_PLAUSIBLE_SPEED_MPH]` (the
+same 5–70 mph constants `rescale_chain_distances` already validates against) — filtering at
+pool-construction time, rather than relying on a post-hoc fallback, is what makes "100% of
+substituted legs are speed-plausible" true *by construction*, with the `ASSUMED_AVERAGE_SPEED_MPH`
+duration fallback (§8.5) reduced to a defensive branch expected to fire at ~0% (mirroring the
+already-validated 0% fallback-chain rate for whole-donor selection). Tag every pool leg with
+`chain_segment` / `chain_type` / `purpose_transition` (§8.3, computed once from `donor_legs`'
+existing per-person grouping) and its own `STRTTIME` (minutes since midnight) for time-of-day
+matching. No `cluster_id` restriction is applied — external profiles have no cluster assignment,
+and nothing in the preservation contract calls for one.
+
+**Tiers.** For each external driving leg, search progressively wider tiers, stopping at the first
+non-empty one (same "widen only until non-empty, never let a later widening override an earlier
+match" philosophy as `MATCH_TOLERANCES` / the Tier A/B/C time preference in `select_donor`):
+
+| Tier | Requires match on | Time-of-day restriction |
+|---|---|---|
+| 1a | `purpose_transition` + `chain_segment` + `chain_type` | `\|leg start − candidate STRTTIME\| ≤ 60 min` |
+| 1b | same as 1a | ≤ 120 min |
+| 1c | same as 1a | unrestricted |
+| 2 | `purpose_transition` + `chain_segment` (drop `chain_type`) | unrestricted |
+| 3 | `purpose_transition` only (drop `chain_segment`) | unrestricted |
+| 4 | `destination_purpose` only (drop `origin_purpose`) | unrestricted |
+
+Tier 4 is expected to never be empty in practice (`home`/`work`/`other` destination categories are
+common in the real-trip donor pool at every time of day), so it is the guaranteed terminus — there
+is no synthesized/fallback leg for this reconciliation the way `build_fallback_chain` exists for
+whole-donor selection, because unlike whole-chain donor selection (bounded by `cluster_id` ×
+`has_driving_leg`, which *can* be empty for a sparse cluster), this leg-level pool is unrestricted by
+cluster and is drawn from the full plausible-and-driving donor-leg universe. If a future run ever
+does exhaust Tier 4 (e.g. an unexpected destination category), that leg is flagged
+`distance_duration_source = "external_unrepaired"` and its original `Distance (mi)`/duration are
+kept verbatim with an explicit implausibility flag — a documented last resort, not the expected
+path.
+
+**Selection within a tier.** Sort the tier's candidates by `(HOUSEID, PERSONID, TRIPID)` and draw
+one uniformly with a seeded `rng.integers(len(candidates))` — the same reproducible tie-break
+convention `_select_by_time_preference` already uses, so a fixed seed reproduces the same
+reconstruction. A single donor leg is sampled (not a tier-wide mean/median) so the substituted
+distances retain realistic donor-to-donor variance instead of flattening to a point estimate.
+
+### 8.5 Distance and duration reconciliation
+
+For the matched donor leg:
+
+```
+new_distance_mi = donor_leg.TRPMILES
+donor_speed_mph = donor_leg.TRPMILES / (donor_leg.TRVLCMIN / 60)
+if MIN_PLAUSIBLE_SPEED_MPH <= donor_speed_mph <= MAX_PLAUSIBLE_SPEED_MPH:
+    new_duration_min = new_distance_mi / donor_speed_mph * 60
+else:
+    new_duration_min = new_distance_mi / ASSUMED_AVERAGE_SPEED_MPH * 60   # expected ~0% of legs
+```
+
+This is the existing `rescale_chain_distances` per-leg plausibility branch (lines 605–621 of
+`generator/activity.py`), reused verbatim rather than re-derived — the same validated constants
+(`MIN_PLAUSIBLE_SPEED_MPH = 5`, `MAX_PLAUSIBLE_SPEED_MPH = 70`, `ASSUMED_AVERAGE_SPEED_MPH = 30`)
+this pipeline already ships. Because the §8.4 pool is pre-filtered to plausible-speed legs, the
+`else` branch is a defensive guard, not the normal path.
+
+### 8.6 Chronology reconciliation — the anchor rule and cascade
+
+Replacing a leg's duration moves the boundary between it and one of its two neighboring
+Parked/Charging windows. Which side moves is decided by a single rule, then a cascade handles the
+rare case where the immediately adjacent window can't absorb the whole change.
+
+**Anchor rule.** For each driving leg:
+- If `is_arrival_at_work` (destination is a `Work` occurrence, `w_1 ... w_k`) — **anchor the leg's
+  end time** (preserves item 8: workplace arrival). The **preceding** Parked/Charging window absorbs
+  the duration change (its own start time, and everything before it, stays untouched).
+- Otherwise (every other leg, including the leg that departs `Work` — `commute_out`'s non-final
+  legs, `midday` departures, and every `commute_return` leg) — **anchor the leg's start time**
+  (preserves item 8's other half: workplace departure, and item 7 generally). The **following**
+  Parked/Charging window absorbs the change (its own end time, and everything after it, stays
+  untouched).
+
+This single rule is why both halves of item 8 (arrival *and* departure) are protected: an arrival
+leg and the leg that immediately departs from that same `Work` window are two different legs with
+opposite anchor directions, so the `Work` window's own two boundary times are each the *anchored*
+side of one of its neighboring legs and are therefore never touched by an ordinary (non-cascading)
+adjustment.
+
+**Cascade (only when the immediately adjacent window can't absorb the full change).** The adjacent
+window's duration is clamped to a floor, `MIN_DWELL_FLOOR_MINUTES` (a new constant, proposed at 1.0
+minute, matching the order of magnitude of the shortest real donor legs already tolerated elsewhere
+in this pipeline). If the required change exceeds what clamping to the floor allows:
+1. The unabsorbed residual ripples forward (start-anchored case) or backward (arrival-anchored
+   case) as a uniform time translation applied to every subsequent (or preceding) leg and window,
+   preserving each of their own internal durations — only their clock placement shifts.
+2. The ripple stops the moment it reaches the next **protected anchor** — any workplace arrival or
+   departure time, or the day boundary (`0:00`/`24:00`) — without needing to move it.
+3. If the ripple reaches a protected anchor and residual still remains, that anchor itself is
+   shifted by the minimal leftover amount. This is the one case where a "whole day" shift can occur,
+   and it is logged distinctly (`anchor_shifted = true`, with the shift in minutes) — expected to be
+   rare, since realistic donor-leg durations (bounded by `MAX_PLAUSIBLE_LEG_MILES` and the 5–70 mph
+   band) rarely exceed a stop's original external dwell time by more than a few tens of minutes.
+
+Because the reconciliation only ever changes existing segment durations (never inserts, removes, or
+reorders), the timeline stays contiguous and 0→24h by construction (item 9), independent of how far
+any given cascade travels.
+
+### 8.7 Per-leg audit record
+
+Every reconstructed driving leg carries:
+
+| Field | Meaning |
+|---|---|
+| `sequence_source` | Always `"external"` in this design — no leg is invented or reordered. |
+| `schedule_status` | `"preserved"` if this leg's own departure/arrival clock times are unchanged from `DriverProfiles.csv`, else `"adjusted"`. |
+| `distance_duration_source` | `"nhts_donor"` (normal case) or `"external_unrepaired"` (Tier-4-exhausted last resort, §8.4). |
+| `match_tier` | Which of Tiers 1a–4 supplied the donor leg (diagnostic only). |
+| `adjustment_minutes` | Signed minutes by which this leg's non-anchored boundary moved from the external value (`0` when `schedule_status == "preserved"`). |
+| `anchor_shifted` | `true` only on the rare cascade case (§8.6, step 3) where a protected workplace anchor itself had to move; carries its own shift in minutes. |
+
+### 8.8 Validation metrics
+
+- **% of location sequences preserved exactly** — always 100% by construction (the `Location`/
+  `State` sequence is never modified); reported as an assertion-style check, not a tolerance metric.
+- **% of workplace arrival times preserved within 5 / 15 / 30 minutes** — computed across all
+  work-occurrence legs (`w_1 ... w_k`, every profile), comparing reconstructed vs. original `End
+  time (hour)` of that `Work` window.
+- **% of workplace departure times preserved within 5 / 15 / 30 minutes** — same, on the `Start time
+  (hour)` of each `Work` window's departure.
+- **Mean and maximum schedule adjustment** — mean/max of `abs(adjustment_minutes)` across all
+  non-anchored window boundaries (i.e., every reconstructed leg's one adjustable side).
+- **% of driving legs whose original schedule required adjustment** — share of legs with
+  `schedule_status == "adjusted"` vs. `"preserved"`.
+- **Chronological validity** — 100% of reconstructed timelines remain monotonic, non-overlapping,
+  and span 0→24h (should be 100% by construction, per item 9 — measured anyway to catch a
+  cascade-logic defect rather than assumed).
+- **Implied speed plausibility** — 100% of substituted legs' `new_distance_mi` /
+  `new_duration_min` fall in `[MIN_PLAUSIBLE_SPEED_MPH, MAX_PLAUSIBLE_SPEED_MPH]` (should be 100% by
+  construction per §8.4/§8.5's pre-filtering, again measured rather than assumed).
+
+### 8.9 Updated implementation roadmap (supersedes §7's adapter-logic bullets)
+
+Not implemented — planning only, per instruction to design before coding.
+
+- **New leg annotation step** (§8.3), applied identically to `build_donor_legs`' output and to a
+  newly parsed `DriverProfiles.csv` frame — one shared function, two call sites.
+- **New leg-level donor pool** (§8.4): `build_donor_legs` output, filtered to `is_driving_leg` and
+  in-band implied speed, tagged with `chain_segment`/`chain_type`/`purpose_transition`/`STRTTIME`.
+  Distinct from (and simpler than) `donor_summary`'s whole-chain, cluster-scoped table — no new
+  external inputs.
+- **New per-leg matching function** (§8.4): the Tier 1a–4 search, reusing the seeded-draw
+  reproducibility convention already established in `_select_by_time_preference`.
+  distance/duration reconciliation reusing `rescale_chain_distances`'s existing plausibility-branch
+  constants verbatim (§8.5).
+- **New chronology reconciliation function** (§8.6): anchor-rule + cascade, operating purely on
+  minutes-since-midnight, with `MIN_DWELL_FLOOR_MINUTES` as its one new constant.
+- **Outputs:** unchanged from §6 — written only under `data/validation/profile_based/`, never to
+  `data/processed/synthetic_employees.parquet` or `data/processed/synthetic_activity.parquet`.
+- **Required tests:** everything in §6/§7's guard-test list, plus: (a) anchor-protection test — for
+  every profile, every workplace arrival/departure time is either unchanged or the shift is recorded
+  under `anchor_shifted`, never silently moved; (b) cascade-floor test —
+  `MIN_DWELL_FLOOR_MINUTES` is never violated (no window duration goes negative or below the floor);
+  (c) leg-count/location-sequence byte-identity test between input and output per profile (item
+  1–4 of the preservation contract); (d) the validation metrics of §8.8 computed and asserted
+  against target thresholds before this experiment is considered to demonstrate the policy works.
