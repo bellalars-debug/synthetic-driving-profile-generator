@@ -28,3 +28,7 @@ reports/xlsx/**/*.xlsx
 
 # OS
 .DS_Store
+
+# External validation datasets
+data/external/*
+!data/external/README.md
