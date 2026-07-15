@@ -296,3 +296,32 @@ tests/                    306 tests covering every module above
   estimation stage (e.g. satellite/aerial imagery-derived parking-space
   counts) to the employee-count estimation stage that feeds this generator,
   closing the loop described in §3.
+
+## 16. Workplace charging estimation — ev-tool station/queue backend
+
+The final pipeline stage turns the synthetic activity profiles into workplace
+EV **charging estimates**. Two backends are available:
+
+- `src/driving_profiles/scenarios/charging_demand.py` — built-in scenario energy
+  model (EV adoption, efficiency, unmanaged-immediate delivery).
+- `src/driving_profiles/scenarios/ev_tool_charging.py` — **station/queue
+  simulation** using Rongxin Yin's ev-infrastructure-tool (MIT), vendored under
+  `third_party/ev_infrastructure_tool/`. Models discrete L2/L3 stations, a
+  first-come queue, contention, and waiting time.
+
+Both read the finalized `data/processed/synthetic_activity.parquet` /
+`synthetic_employees.parquet` and never modify the generator. The ev-tool stage
+reconstructs each employee's day into the tool's `pov_driving_pattern.json`
+schema (work legs → `On-Site`, stops → `Off-Site`) — preserving trip chains the
+ev-tool's own generator can't produce — then runs its charging simulator.
+
+```bash
+# after scripts/run_pipeline.py has produced the activity profiles:
+python scripts/run_ev_tool_charging.py --adoption-rate 0.36 --run-period 30
+```
+
+Outputs `ev_tool_vehicle_status_{rate}.csv` + `ev_tool_summary.json` (vehicles,
+EVs selected, L2 station-count scenarios, peak simultaneous charging). See
+`docs/ev_tool_charging_integration.md`; smoke test in
+`tests/test_ev_tool_charging.py`, runnable demo in
+`scripts/demo_ev_tool_charging.py`.
