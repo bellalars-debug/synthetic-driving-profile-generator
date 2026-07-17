@@ -3,293 +3,489 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Workplace EV Charging Demand Estimator</title>
+<title>EV Charging Infrastructure Planner</title>
 <style>
   :root{
-    --bg:#eef2f3; --grid:#dbe3e6; --surface:#ffffff; --surface-2:#f4f7f8;
-    --ink:#0f2b2e; --muted:#5b7075; --line:#d6e0e2;
-    --accent:#0f9d76; --accent-soft:#d7f0e6; --accent-ink:#0a6b51;
-    --home:#3b82c4; --home-soft:#dbeafe;
-    --shadow:0 1px 2px rgba(15,43,46,.06),0 8px 28px rgba(15,43,46,.08);
-    --radius:16px;
+    --bg:#eef2f3; --surface:#ffffff; --surface-2:#f4f7f8; --line:#dde5e7;
+    --ink:#0f2b2e; --muted:#5f757a; --grid:#dbe3e6;
+    --side:#0f2321; --side-ink:#cfe6df; --side-muted:#7f9d97; --side-line:#1e3b37; --side-active:#16362f;
+    --accent:#12a67c; --accent-ink:#0a6b51; --accent-soft:#d7f0e6;
+    --home:#3b82c4; --amber:#d9903a; --violet:#8a6bd1;
+    --shadow:0 1px 2px rgba(15,43,46,.05),0 6px 24px rgba(15,43,46,.07);
+    --radius:14px;
   }
   @media (prefers-color-scheme:dark){
-    :root{
-      --bg:#0c1416; --grid:#1e2a2d; --surface:#121d20; --surface-2:#0f191b;
-      --ink:#e7f0f0; --muted:#8ba3a7; --line:#223134;
-      --accent:#2bd39e; --accent-soft:#123027; --accent-ink:#7ce7c6;
-      --home:#6ba9e0; --home-soft:#13233a;
-      --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 34px rgba(0,0,0,.45);
-    }
+    :root{ --bg:#0b1213; --surface:#111d1f; --surface-2:#0e191b; --line:#213032;
+      --ink:#e7f0f0; --muted:#8ba3a7; --grid:#1e2a2d; --side:#08110f; --side-ink:#bfe0d6;
+      --side-muted:#6f8b85; --side-line:#15302b; --side-active:#122824;
+      --accent:#2bd39e; --accent-ink:#7ce7c6; --accent-soft:#123027; --home:#6ba9e0;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.45);}
   }
-  :root[data-theme="light"]{
-    --bg:#eef2f3; --grid:#dbe3e6; --surface:#fff; --surface-2:#f4f7f8; --ink:#0f2b2e;
-    --muted:#5b7075; --line:#d6e0e2; --accent:#0f9d76; --accent-soft:#d7f0e6;
-    --accent-ink:#0a6b51; --home:#3b82c4; --home-soft:#dbeafe;
-  }
-  :root[data-theme="dark"]{
-    --bg:#0c1416; --grid:#1e2a2d; --surface:#121d20; --surface-2:#0f191b; --ink:#e7f0f0;
-    --muted:#8ba3a7; --line:#223134; --accent:#2bd39e; --accent-soft:#123027;
-    --accent-ink:#7ce7c6; --home:#6ba9e0; --home-soft:#13233a;
-  }
+  :root[data-theme="light"]{--bg:#eef2f3;--surface:#fff;--surface-2:#f4f7f8;--line:#dde5e7;--ink:#0f2b2e;--muted:#5f757a;--grid:#dbe3e6;--accent:#12a67c;--accent-ink:#0a6b51;--accent-soft:#d7f0e6;--home:#3b82c4;}
+  :root[data-theme="dark"]{--bg:#0b1213;--surface:#111d1f;--surface-2:#0e191b;--line:#213032;--ink:#e7f0f0;--muted:#8ba3a7;--grid:#1e2a2d;--side:#08110f;--side-ink:#bfe0d6;--side-muted:#6f8b85;--side-line:#15302b;--side-active:#122824;--accent:#2bd39e;--accent-ink:#7ce7c6;--accent-soft:#123027;--home:#6ba9e0;}
   *{box-sizing:border-box}
-  html,body{margin:0}
-  body{
-    background:var(--bg); color:var(--ink); min-height:100vh;
-    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    line-height:1.5; -webkit-font-smoothing:antialiased;
-  }
-  .wrap{max-width:940px; margin:0 auto; padding:38px 20px 64px}
-  .eyebrow{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-ink);
-    font-weight:700; margin:0 0 8px}
-  h1{font-size:clamp(26px,4.4vw,38px); line-height:1.08; margin:0 0 10px; letter-spacing:-.02em; text-wrap:balance}
-  .lede{color:var(--muted); font-size:16px; max-width:60ch; margin:0}
-  .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow)}
-  .panel{padding:22px 22px 24px; margin-top:26px}
-  form{display:flex; flex-wrap:wrap; gap:22px; align-items:flex-end}
-  .field{flex:1 1 220px; min-width:200px}
-  label{display:block; font-weight:650; font-size:14px; margin-bottom:8px}
-  .hint{color:var(--muted); font-weight:450; font-size:13px}
-  input[type=number]{
-    width:100%; font-size:30px; font-weight:700; font-variant-numeric:tabular-nums;
-    padding:12px 14px; border-radius:12px; border:1px solid var(--line);
-    background:var(--surface-2); color:var(--ink); letter-spacing:-.01em;
-  }
-  input[type=number]:focus-visible{outline:3px solid var(--accent-soft); border-color:var(--accent)}
-  .slider-row{display:flex; align-items:center; gap:12px}
-  input[type=range]{flex:1; accent-color:var(--accent)}
-  .pct{font-variant-numeric:tabular-nums; font-weight:750; min-width:52px; text-align:right; font-size:18px}
-  button{
-    flex:0 0 auto; font-size:16px; font-weight:700; color:#fff; background:var(--accent);
-    border:0; border-radius:12px; padding:14px 22px; cursor:pointer; letter-spacing:.01em;
-    transition:transform .05s ease, filter .15s ease;
-  }
-  button:hover{filter:brightness(1.06)} button:active{transform:translateY(1px)}
-  button:disabled{opacity:.6; cursor:progress}
-  .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;
-    border-radius:50%; display:inline-block; vertical-align:-3px; margin-right:8px; animation:spin .7s linear infinite}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased;display:flex;min-height:100vh}
+  h1,h2,h3{letter-spacing:-.01em;margin:0}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ---------------- sidebar (tree) ---------------- */
+  .sidebar{width:264px;flex:0 0 264px;background:var(--side);color:var(--side-ink);
+    border-right:1px solid var(--side-line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+  .brand{padding:20px 18px 14px;border-bottom:1px solid var(--side-line)}
+  .brand .logo{display:flex;align-items:center;gap:9px;font-weight:800;font-size:15px;letter-spacing:-.01em}
+  .brand .spark{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--accent),#0c7a5c);display:grid;place-items:center;color:#fff;font-size:13px}
+  .brand .sub{color:var(--side-muted);font-size:11.5px;margin-top:6px;letter-spacing:.02em}
+  .tree{padding:10px 8px;font-size:13.5px;flex:1}
+  .tree .branch{width:100%;text-align:left;display:flex;align-items:center;gap:8px;background:none;border:0;color:var(--side-ink);font-weight:650;font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer}
+  .tree .branch:hover{background:var(--side-active)}
+  .tree .branch.active{background:var(--side-active);color:#fff}
+  .tree .branch .caret{color:var(--side-muted);transition:transform .18s ease;font-size:10px;width:10px}
+  .tree .branch .idx{color:var(--side-muted);font-size:11px;font-variant-numeric:tabular-nums;margin-left:auto}
+  .tree .node[data-open="false"] .caret{transform:rotate(-90deg)}
+  .tree .leaves{display:grid;gap:1px;margin:2px 0 6px 20px;border-left:1px solid var(--side-line);padding-left:8px}
+  .tree .node[data-open="false"] .leaves{display:none}
+  .tree .leaf{width:100%;text-align:left;background:none;border:0;color:var(--side-muted);font-size:12.5px;padding:6px 9px;border-radius:7px;cursor:pointer}
+  .tree .leaf:hover{background:var(--side-active);color:var(--side-ink)}
+  .tree .leaf.dot::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--side-muted);margin-right:8px;vertical-align:1px}
+  .side-foot{padding:12px 16px;border-top:1px solid var(--side-line);color:var(--side-muted);font-size:11px}
+
+  /* ---------------- main ---------------- */
+  main{flex:1;min-width:0;padding:30px 34px 60px;max-width:1080px}
+  .page{display:none}
+  .page.active{display:block;animation:fade .28s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .page-head{margin-bottom:22px}
+  .page-head .eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-ink);font-weight:700}
+  .page-head h1{font-size:27px;margin-top:6px}
+  .page-head p{color:var(--muted);margin:8px 0 0;max-width:64ch;font-size:14.5px}
+  section{scroll-margin-top:18px;margin-top:26px}
+  section > h2{font-size:16px;margin-bottom:12px;display:flex;align-items:center;gap:9px}
+  section > h2::before{content:"";width:4px;height:15px;border-radius:3px;background:var(--accent)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .pad{padding:18px 20px}
+  .empty{color:var(--muted);font-size:14px;padding:30px 20px;text-align:center;border:1px dashed var(--line);border-radius:var(--radius)}
+
+  /* form */
+  form.site-form{display:grid;grid-template-columns:1fr 1fr;gap:18px 20px}
+  .field{display:flex;flex-direction:column}
+  .field.full{grid-column:1/-1}
+  label{font-weight:650;font-size:13px;margin-bottom:7px}
+  label .hint{color:var(--muted);font-weight:450}
+  input,select{font-size:15px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);width:100%}
+  input[type=number]{font-weight:700;font-variant-numeric:tabular-nums}
+  input:focus-visible,select:focus-visible{outline:3px solid var(--accent-soft);border-color:var(--accent)}
+  .slider-row{display:flex;align-items:center;gap:12px}
+  input[type=range]{accent-color:var(--accent);flex:1;padding:0}
+  .pct{font-weight:750;min-width:48px;text-align:right;font-variant-numeric:tabular-nums}
+  button.run{grid-column:1/-1;justify-self:start;font-size:15px;font-weight:700;color:#fff;background:var(--accent);border:0;border-radius:11px;padding:13px 24px;cursor:pointer}
+  button.run:hover{filter:brightness(1.06)} button.run:disabled{opacity:.6;cursor:progress}
+  .spinner{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-2px;margin-right:8px;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
-  @media (prefers-reduced-motion:reduce){.spinner{animation:none}}
-  .error{color:#c0392b; margin-top:16px; font-weight:600}
-  #results{display:none}
-  #results.show{display:block; animation:rise .35s ease}
-  @keyframes rise{from{opacity:0; transform:translateY(8px)}to{opacity:1;transform:none}}
-  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:26px}
-  @media (max-width:720px){.kpis{grid-template-columns:repeat(2,1fr)}}
-  .kpi{padding:18px}
-  .kpi .k-label{font-size:12.5px; color:var(--muted); font-weight:600; letter-spacing:.01em}
-  .kpi .k-val{font-size:34px; font-weight:800; letter-spacing:-.02em; font-variant-numeric:tabular-nums; margin-top:6px; line-height:1}
-  .kpi .k-unit{font-size:14px; color:var(--muted); font-weight:600; margin-left:2px}
-  .kpi.hero{background:linear-gradient(180deg,var(--accent-soft),transparent); border-color:var(--accent)}
-  .kpi.hero .k-val{color:var(--accent-ink)}
-  .chart-card{padding:20px 18px 12px; margin-top:16px}
-  .chart-head{display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin:0 4px 6px}
-  .chart-head h2{font-size:17px; margin:0; letter-spacing:-.01em}
-  .legend{display:flex; gap:16px; font-size:13px; color:var(--muted); font-weight:600}
+  @media (prefers-reduced-motion:reduce){.spinner{animation:none}.page.active{animation:none}}
+  .err{color:#c0392b;font-weight:600;margin-top:14px}
+
+  /* kpi + stat grids */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:13px}
+  .stat{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+  @media (max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}.stat{grid-template-columns:repeat(2,1fr)}form.site-form{grid-template-columns:1fr}}
+  .kpi{padding:16px 17px}
+  .kpi .l{font-size:12px;color:var(--muted);font-weight:600}
+  .kpi .v{font-size:30px;font-weight:800;margin-top:5px;line-height:1;font-variant-numeric:tabular-nums}
+  .kpi .u{font-size:13px;color:var(--muted);font-weight:600;margin-left:2px}
+  .kpi.hero{background:linear-gradient(180deg,var(--accent-soft),transparent);border-color:var(--accent)}
+  .kpi.hero .v{color:var(--accent-ink)}
+
+  /* bar list */
+  .bars{display:flex;flex-direction:column;gap:9px}
+  .barrow{display:grid;grid-template-columns:150px 1fr 52px;align-items:center;gap:10px;font-size:13px}
+  .barrow .track{background:var(--surface-2);border-radius:6px;height:16px;overflow:hidden}
+  .barrow .fill{height:100%;border-radius:6px;background:var(--accent)}
+  .barrow .pctv{text-align:right;font-variant-numeric:tabular-nums;font-weight:650;color:var(--muted)}
+  .barrow .lab{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* histogram */
+  .hist{display:flex;align-items:flex-end;gap:5px;height:110px;padding-top:8px}
+  .hist .col{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end}
+  .hist .col .b{width:100%;max-width:26px;background:var(--home);border-radius:4px 4px 0 0;min-height:2px}
+  .hist .col .t{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+  /* sample profile cards */
+  .profiles{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  @media (max-width:820px){.profiles{grid-template-columns:1fr}}
+  .pcard{padding:15px 16px}
+  .pcard .ptop{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .pcard .pname{font-weight:750;font-size:14px}
+  .pcard .ptag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--surface-2);color:var(--muted)}
+  .pcard .ptag.ev{background:var(--accent-soft);color:var(--accent-ink)}
+  .pcard .pmeta{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .timeline{display:flex;height:22px;border-radius:6px;overflow:hidden;margin-top:12px;border:1px solid var(--line)}
+  .timeline .seg{height:100%}
+  .tl-ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);margin-top:6px}
   .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:0}
-  canvas{width:100%; height:240px; display:block}
-  .note{color:var(--muted); font-size:13px; margin-top:22px; line-height:1.6}
-  .note b{color:var(--ink); font-weight:650}
-  .row-split{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px}
-  @media (max-width:560px){.row-split{grid-template-columns:1fr}}
-  .breakdown{padding:16px 18px}
-  .breakdown .bd-title{font-size:13px;color:var(--muted);font-weight:650;margin-bottom:10px}
-  .bar{height:10px;border-radius:6px;background:var(--surface-2);overflow:hidden;display:flex}
-  .bar span{display:block;height:100%}
-  .bd-rows{margin-top:12px;font-size:13.5px}
-  .bd-rows div{display:flex;justify-content:space-between;padding:3px 0}
-  .bd-rows .num{font-variant-numeric:tabular-nums;font-weight:700}
+
+  /* donut */
+  .donut-wrap{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .donut{width:150px;height:150px;border-radius:50%;flex:0 0 auto}
+  .donut-legend{display:flex;flex-direction:column;gap:8px;font-size:13px}
+  .donut-legend .row{display:flex;align-items:center;gap:8px}
+  .donut-legend .row .n{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:650}
+
+  /* charger cards + suggestions */
+  .charge-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  @media (max-width:820px){.charge-grid{grid-template-columns:1fr}}
+  .chg{padding:18px}
+  .chg .ct{font-size:13px;color:var(--muted);font-weight:650}
+  .chg .cn{font-size:38px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;margin:6px 0 2px}
+  .chg .cr{font-size:12.5px;color:var(--muted)}
+  ul.sugg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+  ul.sugg li{display:flex;gap:11px;font-size:14px;line-height:1.5}
+  ul.sugg li::before{content:"→";color:var(--accent);font-weight:800;flex:0 0 auto}
+  canvas{width:100%;height:230px;display:block}
+  .chart-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin:0 2px 8px}
+  .note{color:var(--muted);font-size:12.5px;margin-top:16px;line-height:1.6}
+  .sitebar{display:flex;gap:2px;margin-top:8px;height:26px;border-radius:7px;overflow:hidden}
+  .topbar{display:none}
+  @media (max-width:720px){
+    body{flex-direction:column}
+    .sidebar{width:100%;height:auto;position:static;flex:none;flex-direction:row;overflow-x:auto}
+    .brand{display:none}.side-foot{display:none}.tree{display:flex;gap:4px;padding:8px}
+    .tree .node[data-open]{}.tree .leaves{display:none!important}
+    main{padding:20px 16px 50px}
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <p class="eyebrow">NHTS-grounded · workplace charging</p>
-  <h1>How much EV charging will your workplace need?</h1>
-  <p class="lede">Enter your headcount. We generate a statistically realistic synthetic
-    workforce from national travel-survey data, give each a full daily driving profile, and
-    simulate workplace charging — no employee data required.</p>
+<aside class="sidebar">
+  <div class="brand">
+    <div class="logo"><span class="spark">⚡</span> Charging Planner</div>
+    <div class="sub">NHTS-grounded workplace EV demand</div>
+  </div>
+  <nav class="tree" id="tree">
+    <div class="node" data-open="true">
+      <button class="branch active" data-page="site"><span class="caret">▾</span>Site<span class="idx">1</span></button>
+      <div class="leaves">
+        <button class="leaf dot" data-page="site" data-sec="sec-inputs">Site details &amp; inputs</button>
+        <button class="leaf dot" data-page="site" data-sec="sec-parking">Employees vs. parking</button>
+      </div>
+    </div>
+    <div class="node" data-open="false">
+      <button class="branch" data-page="transport"><span class="caret">▾</span>Transportation<span class="idx">2</span></button>
+      <div class="leaves">
+        <button class="leaf dot" data-page="transport" data-sec="sec-commute">Commute type distribution</button>
+        <button class="leaf dot" data-page="transport" data-sec="sec-clusters">Cluster of driving</button>
+        <button class="leaf dot" data-page="transport" data-sec="sec-samples">Sampled driving profiles</button>
+        <button class="leaf dot" data-page="transport" data-sec="sec-chars">Driving characteristics</button>
+      </div>
+    </div>
+    <div class="node" data-open="false">
+      <button class="branch" data-page="ev"><span class="caret">▾</span>Vehicle Electrification<span class="idx">3</span></button>
+      <div class="leaves">
+        <button class="leaf dot" data-page="ev" data-sec="sec-adoption">EV adoption</button>
+        <button class="leaf dot" data-page="ev" data-sec="sec-fuel">Fuel mix</button>
+        <button class="leaf dot" data-page="ev" data-sec="sec-chargers">Chargers by station type</button>
+      </div>
+    </div>
+    <div class="node" data-open="false">
+      <button class="branch" data-page="infra"><span class="caret">▾</span>Infrastructure<span class="idx">4</span></button>
+      <div class="leaves">
+        <button class="leaf dot" data-page="infra" data-sec="sec-metrics">Metrics</button>
+        <button class="leaf dot" data-page="infra" data-sec="sec-load">Load curve</button>
+        <button class="leaf dot" data-page="infra" data-sec="sec-suggest">Suggested infrastructure</button>
+      </div>
+    </div>
+  </nav>
+  <div class="side-foot" id="foot">Run a site to populate the analysis.</div>
+</aside>
 
-  <div class="card panel">
-    <form id="form">
-      <div class="field">
-        <label for="employees">Employees at your company
-          <span class="hint">— the only input</span></label>
-        <input id="employees" type="number" min="1" max="5000" value="150" inputmode="numeric" />
+<main>
+  <!-- ============ SITE ============ -->
+  <div class="page active" id="page-site">
+    <div class="page-head"><div class="eyebrow">Step 1 · Project case</div>
+      <h1>Site</h1>
+      <p>Describe the workplace. The only figure the model truly needs is the number of
+        employees — everything downstream is generated from national travel-survey behavior.</p></div>
+
+    <section id="sec-inputs"><h2>Site details &amp; inputs</h2>
+      <div class="card pad">
+        <form class="site-form" id="form">
+          <div class="field"><label for="site_type">Site type</label>
+            <select id="site_type"><option>Office</option><option>Campus / R&amp;D</option>
+              <option>Hospital</option><option>Retail / mixed-use</option><option>Industrial</option></select></div>
+          <div class="field"><label for="location">Location <span class="hint">(optional)</span></label>
+            <input id="location" type="text" placeholder="e.g. Berkeley, CA" /></div>
+          <div class="field"><label for="employees">Number of employees <span class="hint">— required</span></label>
+            <input id="employees" type="number" min="1" max="5000" value="150" /></div>
+          <div class="field"><label for="parking">Parking spaces <span class="hint">(optional; defaults to employees)</span></label>
+            <input id="parking" type="number" min="1" max="20000" placeholder="150" /></div>
+          <div class="field full"><label for="adoption">EV adoption rate <span class="hint">— share of staff driving an EV</span></label>
+            <div class="slider-row"><input id="adoption" type="range" min="5" max="100" value="36" /><span class="pct" id="adoptionVal">36%</span></div></div>
+          <button class="run" id="run" type="submit">Run analysis</button>
+        </form>
+        <div class="err" id="err" style="display:none" role="alert"></div>
       </div>
-      <div class="field">
-        <label for="adoption">EV adoption rate
-          <span class="hint">— share of staff driving an EV</span></label>
-        <div class="slider-row">
-          <input id="adoption" type="range" min="5" max="100" value="36" step="1" />
-          <span class="pct" id="adoptionVal">36%</span>
-        </div>
-      </div>
-      <button id="run" type="submit">Estimate charging demand</button>
-    </form>
-    <div id="error" class="error" role="alert" style="display:none"></div>
+    </section>
+
+    <section id="sec-parking"><h2>Employees vs. parking</h2>
+      <div id="siteSummary"><div class="empty">Run the analysis to see the site summary.</div></div>
+    </section>
   </div>
 
-  <section id="results" aria-live="polite">
-    <div class="kpis">
-      <div class="kpi hero card"><div class="k-label">Chargers recommended</div>
-        <div class="k-val"><span id="kChargers">—</span></div><div class="k-unit">Level-2 ports</div></div>
-      <div class="kpi card"><div class="k-label">Peak charging power</div>
-        <div class="k-val"><span id="kPeak">—</span><span class="k-unit">kW</span></div></div>
-      <div class="kpi card"><div class="k-label">EV drivers</div>
-        <div class="k-val"><span id="kEvs">—</span></div><div class="k-unit">of <span id="kEmp">—</span> staff</div></div>
-      <div class="kpi card"><div class="k-label">Total EV energy / day</div>
-        <div class="k-val"><span id="kEnergy">—</span><span class="k-unit">kWh</span></div></div>
-    </div>
+  <!-- ============ TRANSPORTATION ============ -->
+  <div class="page" id="page-transport">
+    <div class="page-head"><div class="eyebrow">Step 2 · Travel behavior</div>
+      <h1>Transportation</h1>
+      <p>How this synthetic workforce travels — commute modes, the behavioral clusters they
+        fall into, example daily driving profiles, and their aggregate driving characteristics.</p></div>
+    <div id="transportBody"><div class="empty">Run an analysis on the Site page to populate this.</div></div>
+  </div>
 
-    <div class="card chart-card">
-      <div class="chart-head">
-        <h2>Workplace charging load — design day</h2>
-        <div class="legend">
-          <span><i class="dot" style="background:var(--accent)"></i>Workplace</span>
-          <span><i class="dot" style="background:var(--home)"></i>Home (overnight)</span>
-        </div>
-      </div>
-      <canvas id="chart" width="900" height="240" aria-label="24-hour charging load curve"></canvas>
-    </div>
+  <!-- ============ VEHICLE ELECTRIFICATION ============ -->
+  <div class="page" id="page-ev">
+    <div class="page-head"><div class="eyebrow">Step 3 · Electrification</div>
+      <h1>Vehicle Electrification</h1>
+      <p>The electric share of the fleet, the underlying vehicle-fuel mix, and how many
+        chargers of each type the site would need.</p></div>
+    <div id="evBody"><div class="empty">Run an analysis on the Site page to populate this.</div></div>
+  </div>
 
-    <div class="row-split">
-      <div class="card breakdown">
-        <div class="bd-title">Where the energy is delivered</div>
-        <div class="bar"><span id="barWork" style="background:var(--accent)"></span><span id="barHome" style="background:var(--home)"></span></div>
-        <div class="bd-rows">
-          <div><span><i class="dot" style="background:var(--accent)"></i>Workplace charging</span><span class="num"><span id="eWork">—</span> kWh/day</span></div>
-          <div><span><i class="dot" style="background:var(--home)"></i>Home charging</span><span class="num"><span id="eHome">—</span> kWh/day</span></div>
-        </div>
-      </div>
-      <div class="card breakdown">
-        <div class="bd-title">Fleet snapshot</div>
-        <div class="bd-rows">
-          <div><span>Avg one-way commute</span><span class="num"><span id="sCommute">—</span> mi</span></div>
-          <div><span>Fleet driving / day</span><span class="num"><span id="sMiles">—</span> mi</span></div>
-          <div><span>Peak charging time</span><span class="num" id="sPeakTime">—</span></div>
-          <div><span>Charger power assumed</span><span class="num">7.0 kW (L2)</span></div>
-        </div>
-      </div>
-    </div>
-
-    <p class="note"><b>How this works.</b> Your headcount seeds a synthetic workforce sampled from
-      the 2022 U.S. National Household Travel Survey. Each synthetic driver gets a realistic
-      commute, departure/return time, and daily trip chain; an income-linked EV share sets who
-      drives electric. Their arrival profiles feed a station-and-queue charging simulation
-      (Rongxin Yin's ev-infrastructure-tool). <b>Chargers recommended</b> is the peak number of
-      vehicles charging at once on a design day, so no one waits. Home Level-2 drivers arrive
-      well-charged; others top up at work — which is what creates the mid-morning peak.</p>
-  </section>
-</div>
+  <!-- ============ INFRASTRUCTURE ============ -->
+  <div class="page" id="page-infra">
+    <div class="page-head"><div class="eyebrow">Step 4 · Result</div>
+      <h1>Infrastructure</h1>
+      <p>The design-day charging metrics and the suggested EV charging infrastructure for the site.</p></div>
+    <div id="infraBody"><div class="empty">Run an analysis on the Site page to populate this.</div></div>
+  </div>
+</main>
 
 <script>
 (function(){
-  const $ = id => document.getElementById(id);
-  const adoption = $("adoption"), adoptionVal = $("adoptionVal");
-  adoption.addEventListener("input", () => adoptionVal.textContent = adoption.value + "%");
-
+  const $ = s => document.querySelector(s);
+  const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
   const fmt = n => Math.round(n).toLocaleString();
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let DATA=null;
 
-  $("form").addEventListener("submit", async (e) => {
+  // ---- sidebar tree nav ----
+  const tree = $("#tree");
+  function openNode(page){ tree.querySelectorAll(".node").forEach(nd=>{
+    const b=nd.querySelector(".branch"); nd.dataset.open = (b.dataset.page===page)?"true":"false"; }); }
+  function setActive(page){ tree.querySelectorAll(".branch").forEach(b=>b.classList.toggle("active", b.dataset.page===page)); }
+  function go(page, sec){
+    document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.id==="page-"+page));
+    setActive(page); openNode(page);
+    if(sec){ const t=document.getElementById(sec); if(t) setTimeout(()=>t.scrollIntoView({behavior:"smooth",block:"start"}),40); }
+    else window.scrollTo({top:0,behavior:"smooth"});
+  }
+  tree.addEventListener("click", e=>{ const b=e.target.closest("[data-page]"); if(!b)return; go(b.dataset.page, b.dataset.sec); });
+
+  // ---- adoption slider ----
+  $("#adoption").addEventListener("input", e=> $("#adoptionVal").textContent = e.target.value+"%");
+
+  // ---- run ----
+  $("#form").addEventListener("submit", async e=>{
     e.preventDefault();
-    const btn = $("run"), err = $("error");
-    err.style.display = "none";
-    const employees = parseInt($("employees").value, 10);
-    if(!employees || employees < 1){ err.textContent = "Enter at least 1 employee."; err.style.display="block"; return; }
-    btn.disabled = true;
-    const label = btn.textContent;
-    btn.innerHTML = '<span class="spinner"></span>Simulating…';
+    const btn=$("#run"), err=$("#err"); err.style.display="none";
+    const employees=parseInt($("#employees").value,10);
+    if(!employees||employees<1){ err.textContent="Enter at least 1 employee."; err.style.display="block"; return; }
+    const label=btn.textContent; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Simulating…';
     try{
-      const res = await fetch("/api/estimate", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({employees, adoption_rate: parseInt(adoption.value,10)/100})
-      });
-      const data = await res.json();
-      if(!data.ok) throw new Error(data.error || "Estimation failed.");
-      render(data.result);
-    }catch(ex){
-      err.textContent = ex.message; err.style.display = "block";
-    }finally{
-      btn.disabled = false; btn.textContent = label;
-    }
+      const res=await fetch("/api/estimate",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({employees, adoption_rate:parseInt($("#adoption").value,10)/100,
+          site_type:$("#site_type").value, location:$("#location").value,
+          parking_spaces:parseInt($("#parking").value,10)||0})});
+      const j=await res.json(); if(!j.ok) throw new Error(j.error||"Failed.");
+      DATA=j.result; renderAll(DATA); $("#foot").textContent=`${fmt(DATA.employees)} employees · ${DATA.ev_drivers} EVs · ${DATA.recommended_l2_chargers} chargers`;
+      go("transport");
+    }catch(ex){ err.textContent=ex.message; err.style.display="block"; }
+    finally{ btn.disabled=false; btn.textContent=label; }
   });
 
-  function render(r){
-    $("kChargers").textContent = fmt(r.recommended_l2_chargers);
-    $("kPeak").textContent = fmt(r.peak_workplace_power_kw);
-    $("kEvs").textContent = fmt(r.ev_drivers);
-    $("kEmp").textContent = fmt(r.employees);
-    $("kEnergy").textContent = fmt(r.total_ev_energy_kwh_per_day);
-    $("eWork").textContent = fmt(r.workplace_energy_kwh_per_day);
-    $("eHome").textContent = fmt(r.home_energy_kwh_per_day);
-    $("sCommute").textContent = r.avg_commute_miles;
-    $("sMiles").textContent = fmt(r.fleet_daily_miles);
-    const wTot = r.workplace_energy_kwh_per_day, hTot = r.home_energy_kwh_per_day, tot = Math.max(wTot+hTot,1);
-    $("barWork").style.width = (100*wTot/tot)+"%";
-    $("barHome").style.width = (100*hTot/tot)+"%";
-    const pk = r.workplace_load_curve_kw.indexOf(Math.max(...r.workplace_load_curve_kw));
-    $("sPeakTime").textContent = r.curve_labels[pk] || "—";
-    $("results").classList.add("show");
-    drawChart(r);
-    $("results").scrollIntoView({behavior:"smooth", block:"nearest"});
+  // ---- bar list helper ----
+  function barList(items, color){
+    const wrap=el("div","bars");
+    const max=Math.max(1,...items.map(i=>i.pct));
+    items.forEach(i=>{ const r=el("div","barrow");
+      r.appendChild(el("span","lab",i.label));
+      const tr=el("div","track"); const f=el("div","fill"); f.style.width=(100*i.pct/max)+"%";
+      if(color)f.style.background=color; tr.appendChild(f); r.appendChild(tr);
+      r.appendChild(el("span","pctv",i.pct+"%")); wrap.appendChild(r); });
+    return wrap;
   }
 
-  function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function renderAll(d){ renderSite(d); renderTransport(d); renderEV(d); renderInfra(d); }
 
-  function drawChart(r){
-    const cv = $("chart"), dpr = window.devicePixelRatio || 1;
-    const W = cv.clientWidth, H = 240;
-    cv.width = W*dpr; cv.height = H*dpr;
-    const ctx = cv.getContext("2d"); ctx.scale(dpr,dpr);
-    ctx.clearRect(0,0,W,H);
-    const padL=44, padR=12, padT=14, padB=26;
-    const work = r.workplace_load_curve_kw, home = r.home_load_curve_kw, N = work.length;
-    const maxKw = Math.max(1, ...work, ...home);
-    const nice = Math.ceil(maxKw/ (maxKw>200?50:(maxKw>50?20:5))) * (maxKw>200?50:(maxKw>50?20:5));
-    const x = i => padL + (W-padL-padR) * (i/(N-1));
-    const y = v => padT + (H-padT-padB) * (1 - v/nice);
-    const ink=cssVar("--ink"), muted=cssVar("--muted"), grid=cssVar("--grid"),
-          accent=cssVar("--accent"), home_c=cssVar("--home");
-
-    // gridlines + y labels
-    ctx.font = "11px ui-sans-serif,system-ui,sans-serif"; ctx.textBaseline="middle";
-    for(let g=0; g<=4; g++){
-      const v = nice*g/4, yy = y(v);
-      ctx.strokeStyle = grid; ctx.lineWidth=1;
-      ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke();
-      ctx.fillStyle = muted; ctx.textAlign="right"; ctx.fillText(Math.round(v)+"", padL-8, yy);
-    }
-    // x labels (every 6h)
-    ctx.textAlign="center"; ctx.textBaseline="top";
-    [0,6,12,18,24].forEach(h=>{ const i=Math.min(h*4, N-1);
-      ctx.fillStyle=muted; ctx.fillText((h<10?"0":"")+h+":00", x(i), H-padB+6); });
-
-    // workplace area
-    ctx.beginPath(); ctx.moveTo(x(0), y(0));
-    for(let i=0;i<N;i++) ctx.lineTo(x(i), y(work[i]));
-    ctx.lineTo(x(N-1), y(0)); ctx.closePath();
-    const grad = ctx.createLinearGradient(0,padT,0,H-padB);
-    grad.addColorStop(0, hexA(accent,.34)); grad.addColorStop(1, hexA(accent,.02));
-    ctx.fillStyle = grad; ctx.fill();
-    ctx.beginPath(); for(let i=0;i<N;i++){ const px=x(i),py=y(work[i]); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}
-    ctx.strokeStyle=accent; ctx.lineWidth=2; ctx.stroke();
-
-    // home line
-    ctx.beginPath(); for(let i=0;i<N;i++){ const px=x(i),py=y(home[i]); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}
-    ctx.strokeStyle=home_c; ctx.lineWidth=1.6; ctx.setLineDash([4,3]); ctx.stroke(); ctx.setLineDash([]);
-
-    // peak marker
-    const pk = work.indexOf(Math.max(...work));
-    if(work[pk]>0){ ctx.fillStyle=accent; ctx.beginPath(); ctx.arc(x(pk),y(work[pk]),3.5,0,7); ctx.fill();
-      ctx.fillStyle=ink; ctx.font="600 12px ui-sans-serif,system-ui,sans-serif"; ctx.textAlign="center"; ctx.textBaseline="bottom";
-      ctx.fillText(Math.round(work[pk])+" kW", x(pk), y(work[pk])-7); }
+  // ---- SITE summary ----
+  function renderSite(d){
+    const s=d.site, box=$("#siteSummary"); box.innerHTML="";
+    const c=el("div","card pad");
+    c.appendChild(el("div",null,
+      `<div class="stat">
+        <div class="kpi"><div class="l">Site type</div><div class="v" style="font-size:20px">${s.type}</div></div>
+        <div class="kpi"><div class="l">Location</div><div class="v" style="font-size:20px">${s.location}</div></div>
+        <div class="kpi"><div class="l">Spaces per employee</div><div class="v num">${s.space_ratio}</div></div>
+      </div>`));
+    const emp=s.employees, spc=s.parking_spaces, mx=Math.max(emp,spc);
+    c.appendChild(el("div",null,
+      `<div style="margin-top:16px">
+        <div class="barrow" style="grid-template-columns:130px 1fr 70px"><span class="lab">Employees</span>
+          <div class="track"><div class="fill" style="width:${100*emp/mx}%"></div></div><span class="pctv num">${fmt(emp)}</span></div>
+        <div class="barrow" style="grid-template-columns:130px 1fr 70px;margin-top:8px"><span class="lab">Parking spaces</span>
+          <div class="track"><div class="fill" style="width:${100*spc/mx}%;background:var(--home)"></div></div><span class="pctv num">${fmt(spc)}</span></div>
+      </div>
+      <p class="note">Parking-lot detection is out of scope for this build, so parking spaces are
+        taken as an input (defaulting to headcount). Charging demand is driven by the employee count.</p>`));
+    box.appendChild(c);
   }
-  function hexA(c, a){ // accept rgb()/hex from CSS var
-    c = c.trim();
-    if(c.startsWith("#")){ const n=parseInt(c.slice(1),16); const r=(n>>16)&255,g=(n>>8)&255,b=n&255; return `rgba(${r},${g},${b},${a})`; }
-    if(c.startsWith("rgb")) return c.replace("rgb","rgba").replace(")",`,${a})`);
+
+  // ---- TRANSPORTATION ----
+  function renderTransport(d){
+    const b=$("#transportBody"); b.innerHTML="";
+    // commute mode
+    const s1=section("sec-commute","Commute type distribution");
+    const c1=el("div","card pad");
+    c1.appendChild(barList(d.commute_mode_dist.map(m=>({label:m.mode,pct:m.pct})), cssVar("--home")));
+    c1.appendChild(el("p","note","NHTS national usual-commute mode split. The charging analysis focuses on the private-vehicle commuters."));
+    s1.appendChild(c1); b.appendChild(s1);
+    // clusters
+    const s2=section("sec-clusters","Cluster of driving");
+    const c2=el("div","card pad");
+    c2.appendChild(el("p","note","Behavioral archetypes each synthetic driver is grouped into (NHTS life-cycle × commute behavior)."));
+    c2.appendChild(barList(d.archetype_dist.slice(0,10).map(a=>({label:a.name,pct:a.pct})), cssVar("--accent")));
+    s2.appendChild(c2); b.appendChild(s2);
+    // sample profiles
+    const s3=section("sec-samples","Sampled driving profiles");
+    const grid=el("div","profiles");
+    d.sample_profiles.forEach(p=>grid.appendChild(profileCard(p)));
+    s3.appendChild(grid);
+    s3.appendChild(el("div","legend",
+      `<span><i class="dot" style="background:var(--muted)"></i>Home</span>
+       <span><i class="dot" style="background:var(--accent)"></i>Driving</span>
+       <span><i class="dot" style="background:var(--home)"></i>Work</span>
+       <span><i class="dot" style="background:var(--amber)"></i>Stop</span>`));
+    b.appendChild(s3);
+    // characteristics
+    const s4=section("sec-chars","Driving characteristics");
+    const dc=d.driving_characteristics;
+    const c4=el("div","card pad");
+    c4.appendChild(el("div","stat",
+      `<div class="kpi"><div class="l">Median commute</div><div class="v num">${dc.median_commute_mi}<span class="u">mi</span></div></div>
+       <div class="kpi"><div class="l">Median duration</div><div class="v num">${dc.median_duration_min}<span class="u">min</span></div></div>
+       <div class="kpi"><div class="l">Avg daily miles</div><div class="v num">${dc.avg_daily_miles}<span class="u">mi</span></div></div>
+       <div class="kpi"><div class="l">Direct commutes</div><div class="v num">${dc.direct_pct}<span class="u">%</span></div></div>
+       <div class="kpi"><div class="l">Chained (stops)</div><div class="v num">${dc.chained_pct}<span class="u">%</span></div></div>
+       <div class="kpi"><div class="l">Hybrid/WFH workers</div><div class="v num">${dc.pct_hybrid_workers}<span class="u">%</span></div></div>`));
+    const hist=el("div",null,`<div style="font-size:13px;font-weight:650;margin:18px 2px 2px">Home-departure time distribution</div>`);
+    const h=el("div","hist"); const hm=Math.max(1,...d.depart_hist.map(x=>x.pct));
+    d.depart_hist.forEach(x=>{ const col=el("div","col");
+      const bar=el("div","b"); bar.style.height=(100*x.pct/hm)+"%"; col.appendChild(bar);
+      col.appendChild(el("div","t",x.hour+":00")); h.appendChild(col); });
+    hist.appendChild(h); c4.appendChild(hist);
+    s4.appendChild(c4); b.appendChild(s4);
+  }
+  function profileCard(p){
+    const c=el("div","card pcard");
+    c.appendChild(el("div","ptop",
+      `<span class="pname">${p.archetype}</span><span class="ptag ${p.is_ev?'ev':''}">${p.is_ev?'EV':p.fuel.split(' ')[0]}</span>`));
+    c.appendChild(el("div","pmeta",
+      `${p.age} yr · ${p.sex||'—'} · ${p.income} · ${p.commute_mi} mi · leaves ${p.depart}`));
+    const tl=el("div","timeline");
+    const colorOf=a=>a.state==="Driving"?cssVar("--accent"):(a.location==="Home"?cssVar("--muted"):a.location==="Work"?cssVar("--home"):cssVar("--amber"));
+    p.activities.forEach(a=>{ const seg=el("div","seg"); const w=Math.max(0,(a.end-a.start)/24*100);
+      seg.style.width=w+"%"; seg.style.background=colorOf(a); seg.title=`${a.location} ${a.start.toFixed(1)}–${a.end.toFixed(1)}h`; tl.appendChild(seg); });
+    c.appendChild(tl);
+    c.appendChild(el("div","tl-ticks","<span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span>"));
     return c;
   }
+
+  // ---- VEHICLE ELECTRIFICATION ----
+  function renderEV(d){
+    const b=$("#evBody"); b.innerHTML="";
+    const s1=section("sec-adoption","EV adoption");
+    s1.appendChild(el("div","kpis",
+      `<div class="kpi hero"><div class="l">EV adoption (scenario)</div><div class="v num">${Math.round(d.adoption_rate*100)}<span class="u">%</span></div></div>
+       <div class="kpi"><div class="l">EV drivers</div><div class="v num">${fmt(d.ev_drivers)}</div><div class="u">of ${fmt(d.employees)} staff</div></div>
+       <div class="kpi"><div class="l">NHTS-natural EV share</div><div class="v num">${d.natural_ev_pct}<span class="u">%</span></div></div>
+       <div class="kpi"><div class="l">Total EV energy/day</div><div class="v num">${fmt(d.total_ev_energy_kwh_per_day)}<span class="u">kWh</span></div></div>`));
+    s1.appendChild(el("p","note","Adoption rate is the scenario you set; the NHTS-natural share is what income-conditioned ownership would give today."));
+    b.appendChild(s1);
+    // fuel mix donut
+    const s2=section("sec-fuel","Fuel mix");
+    const c2=el("div","card pad");
+    c2.appendChild(fuelDonut(d.fuel_breakdown));
+    s2.appendChild(c2); b.appendChild(s2);
+    // chargers by type
+    const s3=section("sec-chargers","Chargers by station type");
+    const grid=el("div","charge-grid");
+    d.chargers_by_type.forEach((c,i)=>{ const card=el("div","card chg");
+      card.innerHTML=`<div class="ct">${c.type}</div><div class="cn num" style="color:${i===0?'var(--accent-ink)':'var(--home)'}">${c.count}</div><div class="cr">${c.role}</div>`;
+      grid.appendChild(card); });
+    s3.appendChild(grid); b.appendChild(s3);
+  }
+  function fuelDonut(items){
+    const colors=[cssVar("--muted"),cssVar("--accent"),cssVar("--home"),cssVar("--amber"),cssVar("--violet")];
+    let acc=0; const stops=items.map((it,i)=>{ const a=acc; acc+=it.pct; return `${colors[i%colors.length]} ${a}% ${acc}%`; }).join(",");
+    const wrap=el("div","donut-wrap");
+    const d=el("div","donut"); d.style.background=`conic-gradient(${stops})`;
+    d.style.mask="radial-gradient(circle 44px at center, transparent 98%, #000 100%)";
+    d.style.webkitMask="radial-gradient(circle 44px at center, transparent 98%, #000 100%)";
+    wrap.appendChild(d);
+    const lg=el("div","donut-legend");
+    items.forEach((it,i)=>lg.appendChild(el("div","row",
+      `<i class="dot" style="background:${colors[i%colors.length]}"></i>${it.fuel}<span class="n">${it.pct}%</span>`)));
+    wrap.appendChild(lg); return wrap;
+  }
+
+  // ---- INFRASTRUCTURE ----
+  function renderInfra(d){
+    const b=$("#infraBody"); b.innerHTML="";
+    const s1=section("sec-metrics","Metrics");
+    s1.appendChild(el("div","kpis",
+      `<div class="kpi hero"><div class="l">Chargers recommended</div><div class="v num">${d.recommended_l2_chargers}</div><div class="u">Level-2 ports</div></div>
+       <div class="kpi"><div class="l">Peak charging power</div><div class="v num">${fmt(d.peak_workplace_power_kw)}<span class="u">kW</span></div></div>
+       <div class="kpi"><div class="l">Workplace energy/day</div><div class="v num">${fmt(d.workplace_energy_kwh_per_day)}<span class="u">kWh</span></div></div>
+       <div class="kpi"><div class="l">Service size</div><div class="v num">${fmt(d.infrastructure.transformer_kva)}<span class="u">kVA</span></div></div>`));
+    b.appendChild(s1);
+    const s2=section("sec-load","Load curve");
+    const c2=el("div","card pad");
+    c2.appendChild(el("div","chart-head",
+      `<h3 style="font-size:15px;margin:0">Workplace charging — design day</h3>
+       <div class="legend" style="margin:0"><span><i class="dot" style="background:var(--accent)"></i>Workplace</span><span><i class="dot" style="background:var(--home)"></i>Home (overnight)</span></div>`));
+    const cv=el("canvas"); cv.id="chart"; c2.appendChild(cv); s2.appendChild(c2); b.appendChild(s2);
+    const s3=section("sec-suggest","Suggested infrastructure");
+    const c3=el("div","card pad"); const ul=el("ul","sugg");
+    d.infrastructure.suggestions.forEach(x=>ul.appendChild(el("li",null,x)));
+    c3.appendChild(ul); s3.appendChild(c3); b.appendChild(s3);
+    drawChart(d);
+  }
+
+  function section(id,title){ const s=el("section"); s.id=id; s.appendChild(el("h2",null,title)); return s; }
+
+  // ---- load-curve canvas ----
+  function drawChart(r){
+    const cv=$("#chart"); if(!cv)return; const dpr=window.devicePixelRatio||1;
+    const W=cv.clientWidth||820,H=230; cv.width=W*dpr; cv.height=H*dpr;
+    const ctx=cv.getContext("2d"); ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
+    const padL=44,padR=12,padT=12,padB=24;
+    const work=r.workplace_load_curve_kw, home=r.home_load_curve_kw, N=work.length;
+    const maxKw=Math.max(1,...work,...home);
+    const step=maxKw>200?50:(maxKw>50?20:5); const nice=Math.ceil(maxKw/step)*step;
+    const x=i=>padL+(W-padL-padR)*(i/(N-1)), y=v=>padT+(H-padT-padB)*(1-v/nice);
+    const muted=cssVar("--muted"),grid=cssVar("--grid"),accent=cssVar("--accent"),home_c=cssVar("--home"),ink=cssVar("--ink");
+    ctx.font="11px ui-sans-serif,system-ui,sans-serif"; ctx.textBaseline="middle";
+    for(let g=0;g<=4;g++){const v=nice*g/4,yy=y(v);ctx.strokeStyle=grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(W-padR,yy);ctx.stroke();ctx.fillStyle=muted;ctx.textAlign="right";ctx.fillText(Math.round(v),padL-8,yy);}
+    ctx.textAlign="center";ctx.textBaseline="top";
+    [0,6,12,18,24].forEach(h=>{const i=Math.min(h*4,N-1);ctx.fillStyle=muted;ctx.fillText((h<10?"0":"")+h+":00",x(i),H-padB+6);});
+    ctx.beginPath();ctx.moveTo(x(0),y(0));for(let i=0;i<N;i++)ctx.lineTo(x(i),y(work[i]));ctx.lineTo(x(N-1),y(0));ctx.closePath();
+    const gr=ctx.createLinearGradient(0,padT,0,H-padB);gr.addColorStop(0,hexA(accent,.32));gr.addColorStop(1,hexA(accent,.02));ctx.fillStyle=gr;ctx.fill();
+    ctx.beginPath();for(let i=0;i<N;i++){const px=x(i),py=y(work[i]);i?ctx.lineTo(px,py):ctx.moveTo(px,py);}ctx.strokeStyle=accent;ctx.lineWidth=2;ctx.stroke();
+    ctx.beginPath();for(let i=0;i<N;i++){const px=x(i),py=y(home[i]);i?ctx.lineTo(px,py):ctx.moveTo(px,py);}ctx.strokeStyle=home_c;ctx.lineWidth=1.6;ctx.setLineDash([4,3]);ctx.stroke();ctx.setLineDash([]);
+    const pk=work.indexOf(Math.max(...work));
+    if(work[pk]>0){ctx.fillStyle=accent;ctx.beginPath();ctx.arc(x(pk),y(work[pk]),3.5,0,7);ctx.fill();ctx.fillStyle=ink;ctx.font="600 12px ui-sans-serif,system-ui,sans-serif";ctx.textAlign="center";ctx.textBaseline="bottom";ctx.fillText(Math.round(work[pk])+" kW",x(pk),y(work[pk])-7);}
+  }
+  function hexA(c,a){c=c.trim();if(c.startsWith("#")){const n=parseInt(c.slice(1),16);return`rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;}if(c.startsWith("rgb"))return c.replace("rgb","rgba").replace(")",`,${a})`);return c;}
+  window.addEventListener("resize",()=>{ if(DATA && $("#page-infra").classList.contains("active")) drawChart(DATA); });
 })();
 </script>
 </body>

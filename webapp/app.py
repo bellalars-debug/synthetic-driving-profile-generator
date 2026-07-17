@@ -27,7 +27,11 @@ def api_estimate():
         adoption = float(data.get("adoption_rate", 0.36))
         if employees < 1:
             return jsonify({"ok": False, "error": "Enter at least 1 employee."}), 400
-        result = pipeline.estimate(employees, adoption)
+        result = pipeline.estimate(
+            employees, adoption,
+            site_type=str(data.get("site_type", "Office")),
+            location=str(data.get("location", "")),
+            parking_spaces=int(data.get("parking_spaces", 0) or 0))
         return jsonify({"ok": True, "result": result})
     except Exception as exc:                                  # pragma: no cover
         traceback.print_exc()

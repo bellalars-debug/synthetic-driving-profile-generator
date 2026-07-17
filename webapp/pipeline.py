@@ -17,12 +17,15 @@ from __future__ import annotations
 import os
 import sys
 import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_NHTS = os.path.join(_HERE, "nhts_generator")        # bundled NHTS generator + data
+# locate the NHTS generator (works in both repo layouts: bundled or sibling)
+_NHTS = next((c for c in (os.path.join(_HERE, "nhts_generator"), os.path.dirname(_HERE),
+                          "/Users/ashishstephen/nhts_analysis")
+              if os.path.isdir(os.path.join(c, "lbnl_model"))), os.path.dirname(_HERE))
 sys.path.insert(0, _NHTS)                            # for lbnl_model.lbnl_sim
 sys.path.insert(0, os.path.join(_HERE, "ev_charging_sim"))   # for models.* / utilities.*
 
@@ -105,10 +108,14 @@ def _to_pattern(emp, uid, site_id, rng) -> dict:
 
 
 def estimate(employees: int, adoption_rate: float = 0.36, seed: int = 42,
-             site_id: str = "site", run_period_days: int = 2) -> dict:
-    """Run the full estimate. Returns a JSON-serializable summary + load curve."""
+             site_id: str = "site", run_period_days: int = 2,
+             site_type: str = "Office", location: str = "",
+             parking_spaces: int = 0) -> dict:
+    """Run the full estimate. Returns a JSON-serializable payload for the
+    Site / Transportation / Vehicle-Electrification / Infrastructure pages."""
     employees = int(max(1, min(employees, 5000)))
     adoption_rate = float(min(max(adoption_rate, 0.01), 1.0))
+    parking_spaces = int(parking_spaces) if parking_spaces and parking_spaces > 0 else employees
 
     # 1) synthetic drivers -> ev-tool patterns
     sim = S.LBNLSimulation(employees, "Company", site_id, S.DEFAULT_TABLES, seed=seed)
@@ -185,7 +192,8 @@ def estimate(employees: int, adoption_rate: float = 0.36, seed: int = 42,
     fleet_miles = round(sum(sum(t.distance_miles for t in p.employee.trips)
                             for p in sim.profiles), 0)
 
-    return {
+    emps = [p.employee for p in sim.profiles]
+    base = {
         "employees": employees,
         "adoption_rate": round(adoption_rate, 3),
         "ev_drivers": n_evs,
@@ -194,13 +202,137 @@ def estimate(employees: int, adoption_rate: float = 0.36, seed: int = 42,
         "workplace_energy_kwh_per_day": total_work_kwh,
         "home_energy_kwh_per_day": total_home_kwh,
         "total_ev_energy_kwh_per_day": round(total_work_kwh + total_home_kwh, 1),
-        "avg_commute_miles": round(float(np.mean([p.employee.commute_distance_mi
-                                                  for p in sim.profiles])), 1),
+        "avg_commute_miles": round(float(np.mean([e.commute_distance_mi for e in emps])), 1),
         "fleet_daily_miles": fleet_miles,
         "l2_charger_kw": L2_RATE_KW,
         "curve_labels": grid,
         "workplace_load_curve_kw": work_curve,
         "home_load_curve_kw": home_curve,
+    }
+    base.update(_page_data(emps, base, site_type, location, parking_spaces))
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Extra analytics for the dashboard pages
+# ---------------------------------------------------------------------------
+FUEL_LABELS = {"gas": "Gasoline", "hybrid": "Hybrid", "ev": "Electric (BEV)",
+               "phev": "Plug-in hybrid (PHEV)"}
+LOC_DISPLAY = {"Home": "Home", "Work": "Work", "": "Driving"}
+
+
+def _commute_mode_distribution():
+    """NHTS national usual-commute-mode split (context for the fleet)."""
+    import pandas as pd
+    try:
+        m = pd.read_csv(S.DEFAULT_TABLES)
+        d = m[(m["distribution"] == "usual_commute_mode") & (m["geography"] == "National")]
+        rows = [{"mode": str(r["category"]), "pct": round(float(r["weighted_pct"]), 1)}
+                for _, r in d.iterrows()]
+        rows.sort(key=lambda x: -x["pct"])
+        top = rows[:6]
+        other = round(sum(r["pct"] for r in rows[6:]), 1)
+        if other > 0:
+            top.append({"mode": "Other", "pct": other})
+        return top
+    except Exception:
+        return [{"mode": "Car", "pct": 85.0}, {"mode": "Public transit", "pct": 5.0},
+                {"mode": "Walk", "pct": 3.0}, {"mode": "Other", "pct": 7.0}]
+
+
+def _profile_activities(emp):
+    out = []
+    for a in emp.activities:
+        loc = "Driving" if a.state == "Driving" else LOC_DISPLAY.get(a.location, a.location or "Stop")
+        out.append({"state": a.state, "start": round(a.start_min / 60.0, 3),
+                    "end": round(a.end_min / 60.0, 3), "location": loc,
+                    "distance": round(a.distance_miles, 1) if a.state == "Driving" else 0})
+    return out
+
+
+def _sample_profiles(emps, k=6):
+    """A diverse handful of synthetic drivers with their daily timeline."""
+    chained = [e for e in emps if e.morning_chain != "direct" or e.evening_chain != "direct"]
+    evs = [e for e in emps if e.vehicle.is_ev]
+    picks, seen = [], set()
+    for pool in (chained[:2], evs[:1], emps):
+        for e in pool:
+            if e.employee_id in seen:
+                continue
+            seen.add(e.employee_id); picks.append(e)
+            if len(picks) >= k:
+                break
+        if len(picks) >= k:
+            break
+    return [{
+        "id": i + 1, "archetype": e.archetype_name, "age": e.age, "sex": e.sex,
+        "income": e.income_range, "fuel": FUEL_LABELS.get(e.vehicle.fuel_type, e.vehicle.fuel_type),
+        "is_ev": bool(e.vehicle.is_ev), "commute_mi": round(e.commute_distance_mi, 1),
+        "depart": S.m2t(e.depart_home_min), "return": S.m2t(e.depart_work_min),
+        "telework": e.telework_status, "activities": _profile_activities(e),
+    } for i, e in enumerate(picks)]
+
+
+def _page_data(emps, base, site_type, location, parking_spaces):
+    n = len(emps)
+    # driving clusters (archetypes)
+    arch = Counter(e.archetype_name for e in emps)
+    archetype_dist = [{"name": k, "count": v, "pct": round(100 * v / n, 1)}
+                      for k, v in arch.most_common()]
+    # fuel mix (NHTS-natural, income-conditioned)
+    fuel = Counter(e.vehicle.fuel_type for e in emps)
+    fuel_breakdown = [{"fuel": FUEL_LABELS.get(k, k), "count": v, "pct": round(100 * v / n, 1)}
+                      for k, v in fuel.most_common()]
+    natural_ev_pct = round(100 * sum(1 for e in emps if e.vehicle.is_ev) / n, 1)
+    # driving characteristics
+    dists = np.array([e.commute_distance_mi for e in emps])
+    durs = np.array([e.commute_duration_min for e in emps])
+    direct = np.mean([e.morning_chain == "direct" for e in emps])
+    dep_hours = [int(e.depart_home_min // 60) for e in emps]
+    depart_hist = [{"hour": h, "pct": round(100 * dep_hours.count(h) / n, 1)}
+                   for h in range(4, 13)]
+    driving_characteristics = {
+        "avg_commute_mi": round(float(dists.mean()), 1),
+        "median_commute_mi": round(float(np.median(dists)), 1),
+        "avg_duration_min": round(float(durs.mean()), 1),
+        "median_duration_min": round(float(np.median(durs)), 1),
+        "avg_daily_miles": round(base["fleet_daily_miles"] / n, 1),
+        "direct_pct": round(100 * float(direct), 0),
+        "chained_pct": round(100 * (1 - float(direct)), 0),
+        "pct_hybrid_workers": round(100 * float(np.mean([e.telework_status == "hybrid" for e in emps])), 0),
+    }
+    # charger types: L2 for the bulk, a few DC-fast for quick top-ups
+    l2 = base["recommended_l2_chargers"]
+    l3 = max(1, round(l2 * 0.1)) if l2 else 0
+    chargers_by_type = [
+        {"type": "Level 2 (7 kW)", "count": l2, "role": "Primary workplace charging"},
+        {"type": "DC fast (50 kW)", "count": l3, "role": "Optional quick top-ups"},
+    ]
+    # infrastructure sizing
+    peak = base["peak_workplace_power_kw"]
+    transformer_kva = int(round(peak / 0.9 / 5) * 5) if peak else 0   # 0.9 PF, round to 5
+    suggestions = [
+        f"Install ~{l2} Level-2 (7 kW) ports to serve the {peak:.0f} kW design-day peak "
+        f"without queueing.",
+        f"Add ~{l3} DC-fast port(s) for drivers arriving low on charge who need a quick top-up.",
+        f"Size the service for ~{transformer_kva} kVA (peak {peak:.0f} kW at ~0.9 power factor); "
+        f"stagger or add load management to shave the mid-morning peak.",
+        f"~{base['workplace_energy_kwh_per_day']:.0f} kWh/day of workplace energy — consider "
+        f"time-of-use rates and on-site solar to offset the daytime peak.",
+    ]
+    return {
+        "site": {"type": site_type or "Office", "location": location or "—",
+                 "employees": base["employees"], "parking_spaces": parking_spaces,
+                 "space_ratio": round(parking_spaces / base["employees"], 2)},
+        "commute_mode_dist": _commute_mode_distribution(),
+        "archetype_dist": archetype_dist,
+        "sample_profiles": _sample_profiles(emps),
+        "driving_characteristics": driving_characteristics,
+        "depart_hist": depart_hist,
+        "fuel_breakdown": fuel_breakdown,
+        "natural_ev_pct": natural_ev_pct,
+        "chargers_by_type": chargers_by_type,
+        "infrastructure": {"transformer_kva": transformer_kva, "suggestions": suggestions},
     }
 
 

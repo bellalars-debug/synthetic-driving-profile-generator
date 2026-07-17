@@ -1,8 +1,15 @@
 # Workplace EV Charging Demand Estimator (web app)
 
-A one-input web tool: enter a **company headcount** and get the predicted
-workplace EV charging demand. It runs the whole pipeline behind a single field —
-no employee data, no Google Maps, no parking-lot detection required.
+A four-page dashboard with a tree sidebar. Enter a **company headcount** on the
+Site page and it runs the whole pipeline, populating:
+
+- **Site** — type, location, employees vs. parking spaces
+- **Transportation** — commute-mode split, driving clusters (archetypes),
+  sampled driving profiles (24h activity timelines), driving characteristics
+- **Vehicle Electrification** — EV adoption, fuel mix, chargers by station type
+- **Infrastructure** — design-day metrics, load curve, suggested EV infrastructure
+
+No employee data, Google Maps, or parking-lot detection required.
 
 ```
 headcount (+ EV-adoption slider)
