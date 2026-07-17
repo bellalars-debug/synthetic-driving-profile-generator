@@ -1,0 +1,7 @@
+# Add any Python dependencies here, e.g.:
+numpy
+pandas==2.0.2
+googlemaps==4.10.0
+simplejson
+pyyaml
+seaborn

@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workplace EV Charging Demand Estimator</title>
+<style>
+  :root{
+    --bg:#eef2f3; --grid:#dbe3e6; --surface:#ffffff; --surface-2:#f4f7f8;
+    --ink:#0f2b2e; --muted:#5b7075; --line:#d6e0e2;
+    --accent:#0f9d76; --accent-soft:#d7f0e6; --accent-ink:#0a6b51;
+    --home:#3b82c4; --home-soft:#dbeafe;
+    --shadow:0 1px 2px rgba(15,43,46,.06),0 8px 28px rgba(15,43,46,.08);
+    --radius:16px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0c1416; --grid:#1e2a2d; --surface:#121d20; --surface-2:#0f191b;
+      --ink:#e7f0f0; --muted:#8ba3a7; --line:#223134;
+      --accent:#2bd39e; --accent-soft:#123027; --accent-ink:#7ce7c6;
+      --home:#6ba9e0; --home-soft:#13233a;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 34px rgba(0,0,0,.45);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#eef2f3; --grid:#dbe3e6; --surface:#fff; --surface-2:#f4f7f8; --ink:#0f2b2e;
+    --muted:#5b7075; --line:#d6e0e2; --accent:#0f9d76; --accent-soft:#d7f0e6;
+    --accent-ink:#0a6b51; --home:#3b82c4; --home-soft:#dbeafe;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0c1416; --grid:#1e2a2d; --surface:#121d20; --surface-2:#0f191b; --ink:#e7f0f0;
+    --muted:#8ba3a7; --line:#223134; --accent:#2bd39e; --accent-soft:#123027;
+    --accent-ink:#7ce7c6; --home:#6ba9e0; --home-soft:#13233a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--ink); min-height:100vh;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:940px; margin:0 auto; padding:38px 20px 64px}
+  .eyebrow{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-ink);
+    font-weight:700; margin:0 0 8px}
+  h1{font-size:clamp(26px,4.4vw,38px); line-height:1.08; margin:0 0 10px; letter-spacing:-.02em; text-wrap:balance}
+  .lede{color:var(--muted); font-size:16px; max-width:60ch; margin:0}
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow)}
+  .panel{padding:22px 22px 24px; margin-top:26px}
+  form{display:flex; flex-wrap:wrap; gap:22px; align-items:flex-end}
+  .field{flex:1 1 220px; min-width:200px}
+  label{display:block; font-weight:650; font-size:14px; margin-bottom:8px}
+  .hint{color:var(--muted); font-weight:450; font-size:13px}
+  input[type=number]{
+    width:100%; font-size:30px; font-weight:700; font-variant-numeric:tabular-nums;
+    padding:12px 14px; border-radius:12px; border:1px solid var(--line);
+    background:var(--surface-2); color:var(--ink); letter-spacing:-.01em;
+  }
+  input[type=number]:focus-visible{outline:3px solid var(--accent-soft); border-color:var(--accent)}
+  .slider-row{display:flex; align-items:center; gap:12px}
+  input[type=range]{flex:1; accent-color:var(--accent)}
+  .pct{font-variant-numeric:tabular-nums; font-weight:750; min-width:52px; text-align:right; font-size:18px}
+  button{
+    flex:0 0 auto; font-size:16px; font-weight:700; color:#fff; background:var(--accent);
+    border:0; border-radius:12px; padding:14px 22px; cursor:pointer; letter-spacing:.01em;
+    transition:transform .05s ease, filter .15s ease;
+  }
+  button:hover{filter:brightness(1.06)} button:active{transform:translateY(1px)}
+  button:disabled{opacity:.6; cursor:progress}
+  .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;
+    border-radius:50%; display:inline-block; vertical-align:-3px; margin-right:8px; animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.spinner{animation:none}}
+  .error{color:#c0392b; margin-top:16px; font-weight:600}
+  #results{display:none}
+  #results.show{display:block; animation:rise .35s ease}
+  @keyframes rise{from{opacity:0; transform:translateY(8px)}to{opacity:1;transform:none}}
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:26px}
+  @media (max-width:720px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  .kpi{padding:18px}
+  .kpi .k-label{font-size:12.5px; color:var(--muted); font-weight:600; letter-spacing:.01em}
+  .kpi .k-val{font-size:34px; font-weight:800; letter-spacing:-.02em; font-variant-numeric:tabular-nums; margin-top:6px; line-height:1}
+  .kpi .k-unit{font-size:14px; color:var(--muted); font-weight:600; margin-left:2px}
+  .kpi.hero{background:linear-gradient(180deg,var(--accent-soft),transparent); border-color:var(--accent)}
+  .kpi.hero .k-val{color:var(--accent-ink)}
+  .chart-card{padding:20px 18px 12px; margin-top:16px}
+  .chart-head{display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin:0 4px 6px}
+  .chart-head h2{font-size:17px; margin:0; letter-spacing:-.01em}
+  .legend{display:flex; gap:16px; font-size:13px; color:var(--muted); font-weight:600}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:0}
+  canvas{width:100%; height:240px; display:block}
+  .note{color:var(--muted); font-size:13px; margin-top:22px; line-height:1.6}
+  .note b{color:var(--ink); font-weight:650}
+  .row-split{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px}
+  @media (max-width:560px){.row-split{grid-template-columns:1fr}}
+  .breakdown{padding:16px 18px}
+  .breakdown .bd-title{font-size:13px;color:var(--muted);font-weight:650;margin-bottom:10px}
+  .bar{height:10px;border-radius:6px;background:var(--surface-2);overflow:hidden;display:flex}
+  .bar span{display:block;height:100%}
+  .bd-rows{margin-top:12px;font-size:13.5px}
+  .bd-rows div{display:flex;justify-content:space-between;padding:3px 0}
+  .bd-rows .num{font-variant-numeric:tabular-nums;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">NHTS-grounded · workplace charging</p>
+  <h1>How much EV charging will your workplace need?</h1>
+  <p class="lede">Enter your headcount. We generate a statistically realistic synthetic
+    workforce from national travel-survey data, give each a full daily driving profile, and
+    simulate workplace charging — no employee data required.</p>
+
+  <div class="card panel">
+    <form id="form">
+      <div class="field">
+        <label for="employees">Employees at your company
+          <span class="hint">— the only input</span></label>
+        <input id="employees" type="number" min="1" max="5000" value="150" inputmode="numeric" />
+      </div>
+      <div class="field">
+        <label for="adoption">EV adoption rate
+          <span class="hint">— share of staff driving an EV</span></label>
+        <div class="slider-row">
+          <input id="adoption" type="range" min="5" max="100" value="36" step="1" />
+          <span class="pct" id="adoptionVal">36%</span>
+        </div>
+      </div>
+      <button id="run" type="submit">Estimate charging demand</button>
+    </form>
+    <div id="error" class="error" role="alert" style="display:none"></div>
+  </div>
+
+  <section id="results" aria-live="polite">
+    <div class="kpis">
+      <div class="kpi hero card"><div class="k-label">Chargers recommended</div>
+        <div class="k-val"><span id="kChargers">—</span></div><div class="k-unit">Level-2 ports</div></div>
+      <div class="kpi card"><div class="k-label">Peak charging power</div>
+        <div class="k-val"><span id="kPeak">—</span><span class="k-unit">kW</span></div></div>
+      <div class="kpi card"><div class="k-label">EV drivers</div>
+        <div class="k-val"><span id="kEvs">—</span></div><div class="k-unit">of <span id="kEmp">—</span> staff</div></div>
+      <div class="kpi card"><div class="k-label">Total EV energy / day</div>
+        <div class="k-val"><span id="kEnergy">—</span><span class="k-unit">kWh</span></div></div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="chart-head">
+        <h2>Workplace charging load — design day</h2>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--accent)"></i>Workplace</span>
+          <span><i class="dot" style="background:var(--home)"></i>Home (overnight)</span>
+        </div>
+      </div>
+      <canvas id="chart" width="900" height="240" aria-label="24-hour charging load curve"></canvas>
+    </div>
+
+    <div class="row-split">
+      <div class="card breakdown">
+        <div class="bd-title">Where the energy is delivered</div>
+        <div class="bar"><span id="barWork" style="background:var(--accent)"></span><span id="barHome" style="background:var(--home)"></span></div>
+        <div class="bd-rows">
+          <div><span><i class="dot" style="background:var(--accent)"></i>Workplace charging</span><span class="num"><span id="eWork">—</span> kWh/day</span></div>
+          <div><span><i class="dot" style="background:var(--home)"></i>Home charging</span><span class="num"><span id="eHome">—</span> kWh/day</span></div>
+        </div>
+      </div>
+      <div class="card breakdown">
+        <div class="bd-title">Fleet snapshot</div>
+        <div class="bd-rows">
+          <div><span>Avg one-way commute</span><span class="num"><span id="sCommute">—</span> mi</span></div>
+          <div><span>Fleet driving / day</span><span class="num"><span id="sMiles">—</span> mi</span></div>
+          <div><span>Peak charging time</span><span class="num" id="sPeakTime">—</span></div>
+          <div><span>Charger power assumed</span><span class="num">7.0 kW (L2)</span></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="note"><b>How this works.</b> Your headcount seeds a synthetic workforce sampled from
+      the 2022 U.S. National Household Travel Survey. Each synthetic driver gets a realistic
+      commute, departure/return time, and daily trip chain; an income-linked EV share sets who
+      drives electric. Their arrival profiles feed a station-and-queue charging simulation
+      (Rongxin Yin's ev-infrastructure-tool). <b>Chargers recommended</b> is the peak number of
+      vehicles charging at once on a design day, so no one waits. Home Level-2 drivers arrive
+      well-charged; others top up at work — which is what creates the mid-morning peak.</p>
+  </section>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const adoption = $("adoption"), adoptionVal = $("adoptionVal");
+  adoption.addEventListener("input", () => adoptionVal.textContent = adoption.value + "%");
+
+  const fmt = n => Math.round(n).toLocaleString();
+
+  $("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("run"), err = $("error");
+    err.style.display = "none";
+    const employees = parseInt($("employees").value, 10);
+    if(!employees || employees < 1){ err.textContent = "Enter at least 1 employee."; err.style.display="block"; return; }
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span>Simulating…';
+    try{
+      const res = await fetch("/api/estimate", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({employees, adoption_rate: parseInt(adoption.value,10)/100})
+      });
+      const data = await res.json();
+      if(!data.ok) throw new Error(data.error || "Estimation failed.");
+      render(data.result);
+    }catch(ex){
+      err.textContent = ex.message; err.style.display = "block";
+    }finally{
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
+
+  function render(r){
+    $("kChargers").textContent = fmt(r.recommended_l2_chargers);
+    $("kPeak").textContent = fmt(r.peak_workplace_power_kw);
+    $("kEvs").textContent = fmt(r.ev_drivers);
+    $("kEmp").textContent = fmt(r.employees);
+    $("kEnergy").textContent = fmt(r.total_ev_energy_kwh_per_day);
+    $("eWork").textContent = fmt(r.workplace_energy_kwh_per_day);
+    $("eHome").textContent = fmt(r.home_energy_kwh_per_day);
+    $("sCommute").textContent = r.avg_commute_miles;
+    $("sMiles").textContent = fmt(r.fleet_daily_miles);
+    const wTot = r.workplace_energy_kwh_per_day, hTot = r.home_energy_kwh_per_day, tot = Math.max(wTot+hTot,1);
+    $("barWork").style.width = (100*wTot/tot)+"%";
+    $("barHome").style.width = (100*hTot/tot)+"%";
+    const pk = r.workplace_load_curve_kw.indexOf(Math.max(...r.workplace_load_curve_kw));
+    $("sPeakTime").textContent = r.curve_labels[pk] || "—";
+    $("results").classList.add("show");
+    drawChart(r);
+    $("results").scrollIntoView({behavior:"smooth", block:"nearest"});
+  }
+
+  function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  function drawChart(r){
+    const cv = $("chart"), dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = 240;
+    cv.width = W*dpr; cv.height = H*dpr;
+    const ctx = cv.getContext("2d"); ctx.scale(dpr,dpr);
+    ctx.clearRect(0,0,W,H);
+    const padL=44, padR=12, padT=14, padB=26;
+    const work = r.workplace_load_curve_kw, home = r.home_load_curve_kw, N = work.length;
+    const maxKw = Math.max(1, ...work, ...home);
+    const nice = Math.ceil(maxKw/ (maxKw>200?50:(maxKw>50?20:5))) * (maxKw>200?50:(maxKw>50?20:5));
+    const x = i => padL + (W-padL-padR) * (i/(N-1));
+    const y = v => padT + (H-padT-padB) * (1 - v/nice);
+    const ink=cssVar("--ink"), muted=cssVar("--muted"), grid=cssVar("--grid"),
+          accent=cssVar("--accent"), home_c=cssVar("--home");
+
+    // gridlines + y labels
+    ctx.font = "11px ui-sans-serif,system-ui,sans-serif"; ctx.textBaseline="middle";
+    for(let g=0; g<=4; g++){
+      const v = nice*g/4, yy = y(v);
+      ctx.strokeStyle = grid; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke();
+      ctx.fillStyle = muted; ctx.textAlign="right"; ctx.fillText(Math.round(v)+"", padL-8, yy);
+    }
+    // x labels (every 6h)
+    ctx.textAlign="center"; ctx.textBaseline="top";
+    [0,6,12,18,24].forEach(h=>{ const i=Math.min(h*4, N-1);
+      ctx.fillStyle=muted; ctx.fillText((h<10?"0":"")+h+":00", x(i), H-padB+6); });
+
+    // workplace area
+    ctx.beginPath(); ctx.moveTo(x(0), y(0));
+    for(let i=0;i<N;i++) ctx.lineTo(x(i), y(work[i]));
+    ctx.lineTo(x(N-1), y(0)); ctx.closePath();
+    const grad = ctx.createLinearGradient(0,padT,0,H-padB);
+    grad.addColorStop(0, hexA(accent,.34)); grad.addColorStop(1, hexA(accent,.02));
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath(); for(let i=0;i<N;i++){ const px=x(i),py=y(work[i]); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+    ctx.strokeStyle=accent; ctx.lineWidth=2; ctx.stroke();
+
+    // home line
+    ctx.beginPath(); for(let i=0;i<N;i++){ const px=x(i),py=y(home[i]); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+    ctx.strokeStyle=home_c; ctx.lineWidth=1.6; ctx.setLineDash([4,3]); ctx.stroke(); ctx.setLineDash([]);
+
+    // peak marker
+    const pk = work.indexOf(Math.max(...work));
+    if(work[pk]>0){ ctx.fillStyle=accent; ctx.beginPath(); ctx.arc(x(pk),y(work[pk]),3.5,0,7); ctx.fill();
+      ctx.fillStyle=ink; ctx.font="600 12px ui-sans-serif,system-ui,sans-serif"; ctx.textAlign="center"; ctx.textBaseline="bottom";
+      ctx.fillText(Math.round(work[pk])+" kW", x(pk), y(work[pk])-7); }
+  }
+  function hexA(c, a){ // accept rgb()/hex from CSS var
+    c = c.trim();
+    if(c.startsWith("#")){ const n=parseInt(c.slice(1),16); const r=(n>>16)&255,g=(n>>8)&255,b=n&255; return `rgba(${r},${g},${b},${a})`; }
+    if(c.startsWith("rgb")) return c.replace("rgb","rgba").replace(")",`,${a})`);
+    return c;
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Cloudflare tunnel binary (38 MB, platform-specific — download when needed)
+cloudflared
+__pycache__/
+*.pyc
