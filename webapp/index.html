@@ -36,18 +36,18 @@
   .brand .logo{display:flex;align-items:center;gap:13px;font-weight:800;font-size:23px;letter-spacing:-.01em}
   .brand .spark{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#0c7a5c);display:grid;place-items:center;color:#fff;font-size:19px}
   .brand .sub{color:var(--side-muted);font-size:15px;margin-top:10px;letter-spacing:.02em}
-  .tree{padding:16px 14px;font-size:19px;flex:1}
-  .tree .branch{width:100%;text-align:left;display:flex;align-items:center;gap:12px;background:none;border:0;color:var(--side-ink);font-weight:700;font-size:19px;padding:16px 16px;border-radius:12px;cursor:pointer}
+  .tree{padding:22px 16px;font-size:26px;flex:1;display:flex;flex-direction:column;justify-content:space-evenly}
+  .tree .branch{width:100%;text-align:left;display:flex;align-items:center;gap:14px;background:none;border:0;color:var(--side-ink);font-weight:700;font-size:27px;padding:22px 18px;border-radius:14px;cursor:pointer}
   .tree .branch:hover{background:var(--side-active)}
   .tree .branch.active{background:var(--side-active);color:#fff}
-  .tree .branch .caret{color:var(--side-muted);transition:transform .18s ease;font-size:14px;width:14px}
-  .tree .branch .idx{color:var(--side-muted);font-size:16px;font-variant-numeric:tabular-nums;margin-left:auto}
+  .tree .branch .caret{color:var(--side-muted);transition:transform .18s ease;font-size:18px;width:18px}
+  .tree .branch .idx{color:var(--side-muted);font-size:20px;font-variant-numeric:tabular-nums;margin-left:auto}
   .tree .node[data-open="false"] .caret{transform:rotate(-90deg)}
-  .tree .leaves{display:grid;gap:3px;margin:4px 0 10px 30px;border-left:2px solid var(--side-line);padding-left:12px}
+  .tree .leaves{display:grid;gap:6px;margin:8px 0 6px 34px;border-left:2px solid var(--side-line);padding-left:16px}
   .tree .node[data-open="false"] .leaves{display:none}
-  .tree .leaf{width:100%;text-align:left;background:none;border:0;color:var(--side-muted);font-size:16px;padding:11px 13px;border-radius:9px;cursor:pointer}
+  .tree .leaf{width:100%;text-align:left;background:none;border:0;color:var(--side-muted);font-size:20px;padding:14px 15px;border-radius:10px;cursor:pointer}
   .tree .leaf:hover{background:var(--side-active);color:var(--side-ink)}
-  .tree .leaf.dot::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--side-muted);margin-right:11px;vertical-align:1px}
+  .tree .leaf.dot::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--side-muted);margin-right:13px;vertical-align:1px}
   .side-foot{padding:18px 24px;border-top:1px solid var(--side-line);color:var(--side-muted);font-size:14px}
 
   /* ---------------- main ---------------- */
