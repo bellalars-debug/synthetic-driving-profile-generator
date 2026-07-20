@@ -16,7 +16,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 @app.route("/")
 def index():
-    return send_file(os.path.join(_HERE, "index.html"))
+    resp = send_file(os.path.join(_HERE, "index.html"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/api/estimate", methods=["POST"])
